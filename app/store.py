@@ -100,12 +100,13 @@ class Store:
     def add_provider(self, payload):
         name = require_text(payload.get("name"), "供应商名称")
         base_url = validate_url(payload.get("base_url"))
+        website_url = self._optional_url(payload.get("website_url"))
         api_format = normalize_formats(payload.get("api_formats") or payload.get("api_format"))
         with self._lock:
             sort_order = self._next_sort_order("llm_providers")
             cur = self.db().execute(
-                "INSERT INTO llm_providers (name, base_url, api_format, sort_order) VALUES (?, ?, ?, ?)",
-                (name, base_url, api_format, sort_order),
+                "INSERT INTO llm_providers (name, base_url, website_url, api_format, sort_order) VALUES (?, ?, ?, ?, ?)",
+                (name, base_url, website_url, api_format, sort_order),
             )
             provider_id = cur.lastrowid
             self.db().execute("INSERT INTO test_configs (provider_id, test_model) VALUES (?, '')", (provider_id,))
@@ -114,16 +115,17 @@ class Store:
     def update_provider(self, provider_id, payload):
         name = require_text(payload.get("name"), "供应商名称")
         base_url = validate_url(payload.get("base_url"))
+        website_url = self._optional_url(payload.get("website_url"))
         api_format = normalize_formats(payload.get("api_formats") or payload.get("api_format"))
         with self._lock:
             self._provider(provider_id)
             self.db().execute(
                 """
                 UPDATE llm_providers
-                SET name = ?, base_url = ?, api_format = ?, updated_at = CURRENT_TIMESTAMP
+                SET name = ?, base_url = ?, website_url = ?, api_format = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                (name, base_url, api_format, provider_id),
+                (name, base_url, website_url, api_format, provider_id),
             )
             return self.provider_detail(provider_id)
 
@@ -140,7 +142,6 @@ class Store:
             (provider_id,),
         )
         for row in rows:
-            row.pop("is_active", None)
             row["masked_key"] = mask_secret(row["api_key"])
         return rows
 
@@ -151,10 +152,10 @@ class Store:
         sort_order = self._next_sort_order("api_keys", "provider_id", provider_id)
         cur = self.db().execute(
             """
-            INSERT INTO api_keys (provider_id, key_name, api_key, is_active, test_status, sort_order)
-            VALUES (?, ?, ?, ?, 'untested', ?)
+            INSERT INTO api_keys (provider_id, key_name, api_key, test_status, sort_order)
+            VALUES (?, ?, ?, 'untested', ?)
             """,
-            (provider_id, key_name, api_key, 1, sort_order),
+            (provider_id, key_name, api_key, sort_order),
         )
         key = self._key(cur.lastrowid)
         provider = self._provider(provider_id)
@@ -281,27 +282,55 @@ class Store:
         return row
 
     def generic_categories(self):
-        self._sync_generic_categories()
-        rows = self.db().query_all(
-            """
-            SELECT g.*
-            FROM generic_keys g
-            LEFT JOIN generic_categories c ON c.category = g.category
-            ORDER BY COALESCE(c.sort_order, 999999), g.category, g.sort_order, g.id
-            """
+        category_rows = self.db().query_all(
+            "SELECT * FROM generic_categories ORDER BY sort_order, category"
         )
+        key_rows = self.db().query_all("SELECT * FROM generic_keys ORDER BY category, sort_order, id")
         categories = {}
-        for row in rows:
+        for row in category_rows:
+            categories[row["category"]] = {
+                "category": row["category"],
+                "description": row.get("description") or "",
+                "items": [],
+            }
+        for row in key_rows:
             row["masked_value"] = mask_secret(row["key_value"])
-            categories.setdefault(row["category"], []).append(row)
-        return [{"category": category, "items": items} for category, items in categories.items()]
+            categories[row["category"]]["items"].append(row)
+        return list(categories.values())
+
+    def add_generic_category(self, payload):
+        category = require_text(payload.get("category") or payload.get("name"), "类别名称")
+        description = str(payload.get("description") or "").strip()
+        if self.db().query_one("SELECT category FROM generic_categories WHERE category = ?", (category,)):
+            raise ValueError("类别名称已存在")
+        sort_order = self._next_sort_order("generic_categories")
+        self.db().execute(
+            "INSERT INTO generic_categories (category, description, sort_order) VALUES (?, ?, ?)",
+            (category, description, sort_order),
+        )
+        return self._generic_category(category)
+
+    def update_generic_category(self, category, payload):
+        old_category = require_text(category, "类别名称")
+        new_category = require_text(payload.get("category") or payload.get("name"), "类别名称")
+        description = str(payload.get("description") or "").strip()
+        self._generic_category(old_category)
+        if old_category != new_category:
+            exists = self.db().query_one("SELECT category FROM generic_categories WHERE category = ?", (new_category,))
+            if exists:
+                raise ValueError("类别名称已存在")
+        self.db().execute(
+            "UPDATE generic_categories SET category = ?, description = ? WHERE category = ?",
+            (new_category, description, old_category),
+        )
+        return self._generic_category(new_category)
 
     def add_generic_key(self, payload):
         category = require_text(payload.get("category"), "类别名称")
         key_name = require_text(payload.get("key_name"), "键名")
         key_value = require_text(payload.get("key_value"), "键值")
         description = str(payload.get("description") or "").strip()
-        self._ensure_generic_category(category)
+        self._generic_category(category)
         sort_order = self._next_sort_order("generic_keys", "category", category)
         cur = self.db().execute(
             """
@@ -318,7 +347,7 @@ class Store:
         key_name = require_text(payload.get("key_name"), "键名")
         key_value = require_text(payload.get("key_value"), "键值")
         description = str(payload.get("description") or "").strip()
-        self._ensure_generic_category(category)
+        self._generic_category(category)
         sort_order = old["sort_order"] if old["category"] == category else self._next_sort_order("generic_keys", "category", category)
         self.db().execute(
             """
@@ -329,7 +358,6 @@ class Store:
             (category, key_name, key_value, description, sort_order, item_id),
         )
         if old["category"] != category:
-            self._cleanup_generic_category(old["category"])
             self._renumber_table("generic_keys", "category", old["category"])
             self._renumber_table("generic_keys", "category", category)
         return self._generic_key(item_id)
@@ -338,11 +366,9 @@ class Store:
         row = self._generic_key(item_id)
         self.db().execute("DELETE FROM generic_keys WHERE id = ?", (item_id,))
         self._renumber_table("generic_keys", "category", row["category"])
-        self._cleanup_generic_category(row["category"])
 
     def delete_generic_category(self, category):
         category = require_text(category, "类别名称")
-        self.db().execute("DELETE FROM generic_keys WHERE category = ?", (category,))
         self.db().execute("DELETE FROM generic_categories WHERE category = ?", (category,))
 
     def reorder_providers(self, ordered_ids):
@@ -405,7 +431,6 @@ class Store:
         row = self.db().query_one("SELECT * FROM api_keys WHERE id = ?", (key_id,))
         if not row:
             raise ValueError("密钥不存在")
-        row.pop("is_active", None)
         row["masked_key"] = mask_secret(row["api_key"])
         return row
 
@@ -414,6 +439,13 @@ class Store:
         if not row:
             raise ValueError("键值对不存在")
         row["masked_value"] = mask_secret(row["key_value"])
+        return row
+
+    def _generic_category(self, category):
+        row = self.db().query_one("SELECT * FROM generic_categories WHERE category = ?", (category,))
+        if not row:
+            raise ValueError("类别不存在，请先创建类别")
+        row["description"] = row.get("description") or ""
         return row
 
     def _prompt_settings(self, row):
@@ -446,22 +478,8 @@ class Store:
         except (TypeError, ValueError) as exc:
             raise ValueError(f"{field_name}必须是ID列表") from exc
 
-    def _ensure_generic_category(self, category):
-        exists = self.db().query_one("SELECT category FROM generic_categories WHERE category = ?", (category,))
-        if exists:
-            return
-        sort_order = self._next_sort_order("generic_categories")
-        self.db().execute(
-            "INSERT INTO generic_categories (category, sort_order) VALUES (?, ?)",
-            (category, sort_order),
-        )
-
-    def _cleanup_generic_category(self, category):
-        count = self.db().query_one("SELECT COUNT(*) AS count FROM generic_keys WHERE category = ?", (category,))
-        if count and count["count"] == 0:
-            self.db().execute("DELETE FROM generic_categories WHERE category = ?", (category,))
-
-    def _sync_generic_categories(self):
-        rows = self.db().query_all("SELECT DISTINCT category FROM generic_keys ORDER BY category")
-        for row in rows:
-            self._ensure_generic_category(row["category"])
+    def _optional_url(self, value):
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        return validate_url(text)

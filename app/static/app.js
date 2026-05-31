@@ -5,11 +5,13 @@ const state = {
   selectedProviderId: null,
   providerDetail: null,
   generic: [],
+  selectedGenericCategory: null,
   testSettings: null,
+  backendOnline: true,
 };
 
 const formatLabels = {
-  openai_completion: "OpenAI Completions",
+  openai_chat_completion: "OpenAI Chat Completions",
   openai_response: "OpenAI Response",
   anthropic_message: "Anthropic Messages",
 };
@@ -18,20 +20,38 @@ const app = document.getElementById("app");
 const toastEl = document.getElementById("toast");
 const modalRoot = document.getElementById("modal-root");
 let orderDraft = null;
+let confirmResolver = null;
+let connectionTimer = null;
 
 document.addEventListener("DOMContentLoaded", init);
 
 async function init() {
-  await loadStatus();
+  await loadStatus().catch((error) => showToast(error.message || "无法连接后端服务", 5000));
+  connectionTimer = setInterval(checkBackendConnection, 5000);
   render();
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
-  const payload = await response.json();
+  let response;
+  try {
+    response = await fetch(path, {
+      headers: { "Content-Type": "application/json" },
+      ...options,
+    });
+  } catch (error) {
+    state.backendOnline = false;
+    const message = "无法连接后端服务。请确认程序仍在运行，然后刷新页面或重试操作。";
+    const wrapped = new Error(message);
+    wrapped.isConnectionError = true;
+    throw wrapped;
+  }
+  state.backendOnline = true;
+  let payload;
+  try {
+    payload = await response.json();
+  } catch (error) {
+    throw new Error("后端响应不是有效数据，请检查服务状态。");
+  }
   if (!payload.ok) throw new Error(payload.error || "请求失败");
   return payload.data;
 }
@@ -42,6 +62,28 @@ function jsonOptions(method, data) {
 
 async function loadStatus() {
   state.status = await api("/api/status");
+}
+
+async function checkBackendConnection() {
+  try {
+    const response = await fetch("/api/status", { headers: { "Content-Type": "application/json" } });
+    const payload = await response.json();
+    if (!payload.ok) throw new Error("状态接口异常");
+    const wasOffline = !state.backendOnline;
+    state.backendOnline = true;
+    state.status = payload.data;
+    if (wasOffline) {
+      showToast("后端连接已恢复");
+      render();
+    }
+  } catch (error) {
+    const wasOnline = state.backendOnline;
+    state.backendOnline = false;
+    if (wasOnline) {
+      showToast("无法连接后端服务。请确认程序仍在运行。", 6000);
+      render();
+    }
+  }
 }
 
 async function loadProviders() {
@@ -62,6 +104,12 @@ async function loadProviderDetail(providerId) {
 
 async function loadGeneric() {
   state.generic = await api("/api/generic");
+  if (!state.selectedGenericCategory && state.generic.length) {
+    state.selectedGenericCategory = state.generic[0].category;
+  }
+  if (state.selectedGenericCategory && !state.generic.some((group) => group.category === state.selectedGenericCategory)) {
+    state.selectedGenericCategory = state.generic[0] ? state.generic[0].category : null;
+  }
 }
 
 async function loadTestSettings() {
@@ -69,6 +117,10 @@ async function loadTestSettings() {
 }
 
 function render() {
+  if (!state.status && !state.backendOnline) {
+    renderOffline();
+    return;
+  }
   if (!state.status || !state.status.unlocked) {
     renderAuth();
     return;
@@ -77,7 +129,10 @@ function render() {
     <div class="app-shell">
       <header class="titlebar">
         <h1>APIKEY管理器</h1>
-        <div class="toolbar"><button type="button" onclick="lockApp()">锁定</button></div>
+        <div class="toolbar">
+          ${renderConnectionStatus()}
+          <button type="button" onclick="lockApp()">锁定</button>
+        </div>
       </header>
       <div class="main-layout">
         <nav class="nav">
@@ -86,6 +141,27 @@ function render() {
           <button class="${state.view === "settings" ? "active" : ""}" onclick="switchView('settings')">设置</button>
         </nav>
         <main class="content">${renderCurrentView()}</main>
+      </div>
+    </div>
+  `;
+}
+
+function renderConnectionStatus() {
+  return `
+    <div class="connection-status ${state.backendOnline ? "online" : "offline"}" title="${state.backendOnline ? "后端连接正常" : "无法连接后端服务"}">
+      <span class="connection-dot"></span>
+      <span>${state.backendOnline ? "已连接" : "已断开"}</span>
+    </div>
+  `;
+}
+
+function renderOffline() {
+  app.innerHTML = `
+    <div class="auth-shell">
+      <div class="auth-box">
+        <h1>无法连接后端服务</h1>
+        <p class="meta">前端页面已经打开，但本地后端没有响应。请确认程序窗口仍在运行，然后刷新页面。</p>
+        <button class="primary" type="button" onclick="location.reload()">刷新页面</button>
       </div>
     </div>
   `;
@@ -154,6 +230,10 @@ function renderProviderListItem(item, index) {
 }
 
 function renderProviderDetail(provider) {
+  const websiteActions = provider.website_url ? `
+    <a class="button-link" href="${escapeAttr(provider.website_url)}" target="_blank" rel="noopener noreferrer">打开官网</a>
+    <button type="button" onclick="copyText(${jsLiteral(provider.website_url)})">复制官网</button>
+  ` : "";
   return `
     <div class="pane-head">
       <div>
@@ -161,6 +241,7 @@ function renderProviderDetail(provider) {
         <div class="meta">${escapeHtml(provider.base_url)} · ${provider.api_formats.map((item) => formatLabels[item] || item).join("，")}</div>
       </div>
       <div class="toolbar">
+        ${websiteActions}
         <button type="button" onclick="copyText(${jsLiteral(provider.base_url)})">复制端点</button>
         <button type="button" onclick="openProviderModal(${provider.id})">编辑</button>
         <button class="danger" type="button" onclick="deleteProvider(${provider.id})">删除</button>
@@ -269,13 +350,17 @@ function renderModelsSection(provider) {
       </div>
       <div class="hint">刷新模型列表不依赖测试模型配置，只使用当前指定的测试密钥请求模型端点。</div>
       ${cache.model_ids.length ? `
+        <div class="model-search">
+          <input type="search" placeholder="搜索模型" oninput="filterModelList(this)" />
+        </div>
         <div class="model-list">
           ${cache.model_ids.map((model) => `
-            <div class="model-row">
+            <div class="model-row" data-model="${escapeAttr(String(model).toLowerCase())}">
               <span class="secret">${escapeHtml(model)}</span>
               <button type="button" onclick="copyText(${jsLiteral(model)})">复制</button>
             </div>
           `).join("")}
+          <div class="model-empty" hidden>没有匹配的模型</div>
         </div>
       ` : `<div class="empty">暂无模型缓存</div>`}
     </section>
@@ -290,14 +375,14 @@ function renderGenericView() {
           <h2>类别列表</h2>
           <div class="toolbar">
             <button type="button" onclick="openOrderModal('categories')" ${state.generic.length > 1 ? "" : "disabled"}>调整顺序</button>
-            <button class="primary icon" type="button" title="添加类别" onclick="openGenericModal()">＋</button>
+            <button class="primary icon" type="button" title="添加类别" onclick="openGenericCategoryModal()">＋</button>
           </div>
         </div>
         ${state.generic.length ? state.generic.map(renderGenericListItem).join("") : `<div class="empty">暂无类别</div>`}
       </aside>
       <section class="detail-pane">
         <div class="detail-body">
-          ${state.generic.length ? state.generic.map(renderGenericGroup).join("") : `<div class="empty">请先添加键值对</div>`}
+          ${renderSelectedGenericGroup()}
         </div>
       </section>
     </div>
@@ -306,8 +391,8 @@ function renderGenericView() {
 
 function renderGenericListItem(group, index) {
   return `
-    <div class="list-entry">
-      <button class="list-main" onclick="scrollCategory(${jsLiteral(group.category)})">
+    <div class="list-entry ${group.category === state.selectedGenericCategory ? "active" : ""}">
+      <button class="list-main" onclick="selectGenericCategory(${jsLiteral(group.category)})">
         <strong>${escapeHtml(group.category)}</strong>
         <span>${group.items.length} 个键值</span>
       </button>
@@ -315,17 +400,28 @@ function renderGenericListItem(group, index) {
   `;
 }
 
+function renderSelectedGenericGroup() {
+  if (!state.generic.length) return `<div class="empty">请先添加类别</div>`;
+  const group = state.generic.find((item) => item.category === state.selectedGenericCategory) || state.generic[0];
+  return renderGenericGroup(group);
+}
+
 function renderGenericGroup(group) {
   return `
     <section class="section" id="cat-${cssSafe(group.category)}">
       <div class="section-head">
-        <h2>${escapeHtml(group.category)}</h2>
+        <div>
+          <h2>${escapeHtml(group.category)}</h2>
+          ${group.description ? `<div class="meta">${escapeHtml(group.description)}</div>` : ""}
+        </div>
         <div class="toolbar">
           <button type="button" onclick="openOrderModal('genericKeys', ${jsLiteral(group.category)})" ${group.items.length > 1 ? "" : "disabled"}>调整顺序</button>
-          <button class="primary" type="button" onclick="openGenericModal(${jsLiteral(group.category)})">添加键值对</button>
+          <button type="button" onclick="openGenericCategoryModal(${jsLiteral(group.category)})">编辑类别</button>
+          <button class="primary" type="button" onclick="openGenericKeyModal(${jsLiteral(group.category)})">添加键值对</button>
           <button class="danger" type="button" onclick="deleteGenericCategory(${jsLiteral(group.category)})">删除类别</button>
         </div>
       </div>
+      ${group.items.length ? `
       <div class="table-wrap">
         <table>
           <thead>
@@ -345,7 +441,7 @@ function renderGenericGroup(group) {
                 <td>
                   <div class="toolbar">
                     <button type="button" onclick="copyText(${jsLiteral(item.key_value)})">复制</button>
-                    <button type="button" onclick="openGenericModal(${jsLiteral(group.category)}, ${item.id})">编辑</button>
+                    <button type="button" onclick="openGenericKeyModal(${jsLiteral(group.category)}, ${item.id})">编辑</button>
                     <button class="danger" type="button" onclick="deleteGenericKey(${item.id})">删除</button>
                   </div>
                 </td>
@@ -354,6 +450,7 @@ function renderGenericGroup(group) {
           </tbody>
         </table>
       </div>
+      ` : `<div class="empty">该类别下暂无键值对</div>`}
     </section>
   `;
 }
@@ -425,6 +522,7 @@ async function lockApp() {
     state.providers = [];
     state.providerDetail = null;
     state.generic = [];
+    state.selectedGenericCategory = null;
     state.testSettings = null;
     render();
   });
@@ -447,7 +545,7 @@ async function selectProvider(providerId) {
 
 function openProviderModal(providerId) {
   const provider = providerId ? state.providerDetail : null;
-  const selected = new Set(provider ? provider.api_formats : ["openai_response"]);
+  const selected = new Set(provider ? provider.api_formats : ["openai_chat_completion"]);
   openModal(`
     <form class="modal" onsubmit="submitProvider(event, ${providerId || "null"})">
       <h2>${provider ? "编辑供应商" : "添加供应商"}</h2>
@@ -458,6 +556,10 @@ function openProviderModal(providerId) {
       <div class="field">
         <label>API端点</label>
         <input name="base_url" value="${escapeAttr(provider ? provider.base_url : "")}" placeholder="https://api.openai.com/v1" required />
+      </div>
+      <div class="field">
+        <label>官网地址</label>
+        <input name="website_url" value="${escapeAttr(provider ? provider.website_url || "" : "")}" placeholder="https://example.com" />
       </div>
       <div class="checks">
         ${Object.entries(formatLabels).map(([value, label]) => `
@@ -482,6 +584,7 @@ async function submitProvider(event, providerId) {
     const data = {
       name: form.get("name"),
       base_url: form.get("base_url"),
+      website_url: form.get("website_url"),
       api_formats: form.getAll("api_formats"),
     };
     if (providerId) {
@@ -497,7 +600,12 @@ async function submitProvider(event, providerId) {
 }
 
 async function deleteProvider(providerId) {
-  if (!confirm("确认删除该供应商及其所有密钥、测试配置和模型缓存？")) return;
+  const confirmed = await confirmAction({
+    title: "删除供应商",
+    message: "该供应商下的密钥、测试配置和模型缓存都会一起删除。",
+    confirmText: "删除",
+  });
+  if (!confirmed) return;
   await run(async () => {
     await api(`/api/providers/${providerId}`, { method: "DELETE" });
     state.selectedProviderId = null;
@@ -556,7 +664,12 @@ async function setTestKey(providerId, keyId) {
 }
 
 async function deleteKey(keyId) {
-  if (!confirm("确认删除该密钥？")) return;
+  const confirmed = await confirmAction({
+    title: "删除密钥",
+    message: "删除后无法从应用内恢复该密钥。",
+    confirmText: "删除",
+  });
+  if (!confirmed) return;
   await run(async () => {
     await api(`/api/keys/${keyId}`, { method: "DELETE" });
     await loadProviderDetail(state.selectedProviderId);
@@ -593,6 +706,21 @@ async function saveProviderTestConfig(providerId) {
   });
 }
 
+function filterModelList(input) {
+  const section = input.closest(".section");
+  if (!section) return;
+  const keyword = input.value.trim().toLowerCase();
+  const rows = Array.from(section.querySelectorAll(".model-row"));
+  let visibleCount = 0;
+  for (const row of rows) {
+    const matched = !keyword || row.dataset.model.includes(keyword);
+    row.hidden = !matched;
+    if (matched) visibleCount += 1;
+  }
+  const empty = section.querySelector(".model-empty");
+  if (empty) empty.hidden = visibleCount > 0;
+}
+
 async function saveGlobalTestSettings(event) {
   event.preventDefault();
   await run(async () => {
@@ -605,7 +733,54 @@ async function saveGlobalTestSettings(event) {
   });
 }
 
-function openGenericModal(category, itemId) {
+function selectGenericCategory(category) {
+  state.selectedGenericCategory = category;
+  render();
+}
+
+function openGenericCategoryModal(category) {
+  const group = category ? state.generic.find((item) => item.category === category) : null;
+  openModal(`
+    <form class="modal" onsubmit="submitGenericCategory(event, ${jsLiteral(category || "")})">
+      <h2>${group ? "编辑类别" : "添加类别"}</h2>
+      <div class="field">
+        <label>类别名称</label>
+        <input name="category" value="${escapeAttr(group ? group.category : "")}" required />
+      </div>
+      <div class="field">
+        <label>描述</label>
+        <input name="description" value="${escapeAttr(group ? group.description || "" : "")}" />
+      </div>
+      <div class="modal-actions">
+        <button type="button" onclick="closeModal()">取消</button>
+        <button class="primary" type="submit">保存</button>
+      </div>
+    </form>
+  `);
+}
+
+async function submitGenericCategory(event, oldCategory) {
+  event.preventDefault();
+  await run(async () => {
+    const form = new FormData(event.target);
+    const data = {
+      category: form.get("category"),
+      description: form.get("description"),
+    };
+    if (oldCategory) {
+      const updated = await api(`/api/generic/category/${encodeURIComponent(oldCategory)}`, jsonOptions("PUT", data));
+      state.selectedGenericCategory = updated.category;
+    } else {
+      const created = await api("/api/generic/categories", jsonOptions("POST", data));
+      state.selectedGenericCategory = created.category;
+    }
+    closeModal();
+    await loadGeneric();
+    render();
+  });
+}
+
+function openGenericKeyModal(category, itemId) {
   let item = null;
   if (itemId) {
     for (const group of state.generic) {
@@ -614,11 +789,16 @@ function openGenericModal(category, itemId) {
     }
   }
   openModal(`
-    <form class="modal" onsubmit="submitGeneric(event, ${itemId || "null"})">
+    <form class="modal" onsubmit="submitGenericKey(event, ${itemId || "null"})">
       <h2>${item ? "编辑键值对" : "添加键值对"}</h2>
       <div class="field">
         <label>类别名称</label>
-        <input name="category" value="${escapeAttr(item ? item.category : category || "")}" required />
+        <select name="category" required>
+          ${state.generic.map((group) => {
+            const selected = (item ? item.category : category) === group.category ? "selected" : "";
+            return `<option value="${escapeAttr(group.category)}" ${selected}>${escapeHtml(group.category)}</option>`;
+          }).join("")}
+        </select>
       </div>
       <div class="field">
         <label>键名</label>
@@ -640,7 +820,7 @@ function openGenericModal(category, itemId) {
   `);
 }
 
-async function submitGeneric(event, itemId) {
+async function submitGenericKey(event, itemId) {
   event.preventDefault();
   await run(async () => {
     const form = new FormData(event.target);
@@ -655,6 +835,7 @@ async function submitGeneric(event, itemId) {
     } else {
       await api("/api/generic", jsonOptions("POST", data));
     }
+    state.selectedGenericCategory = data.category;
     closeModal();
     await loadGeneric();
     render();
@@ -662,7 +843,12 @@ async function submitGeneric(event, itemId) {
 }
 
 async function deleteGenericKey(itemId) {
-  if (!confirm("确认删除该键值对？")) return;
+  const confirmed = await confirmAction({
+    title: "删除键值对",
+    message: "删除后无法从应用内恢复该键值对。",
+    confirmText: "删除",
+  });
+  if (!confirmed) return;
   await run(async () => {
     await api(`/api/generic/${itemId}`, { method: "DELETE" });
     await loadGeneric();
@@ -671,9 +857,15 @@ async function deleteGenericKey(itemId) {
 }
 
 async function deleteGenericCategory(category) {
-  if (!confirm(`确认删除“${category}”类别下的所有键值对？`)) return;
+  const confirmed = await confirmAction({
+    title: "删除类别",
+    message: `将删除“${category}”类别及其下所有键值对。`,
+    confirmText: "删除",
+  });
+  if (!confirmed) return;
   await run(async () => {
     await api(`/api/generic/category/${encodeURIComponent(category)}`, { method: "DELETE" });
+    if (state.selectedGenericCategory === category) state.selectedGenericCategory = null;
     await loadGeneric();
     render();
   });
@@ -770,11 +962,6 @@ async function saveOrderDraft() {
   });
 }
 
-function scrollCategory(category) {
-  const target = document.getElementById(`cat-${cssSafe(category)}`);
-  if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
-}
-
 async function copyText(text) {
   await run(async () => {
     await navigator.clipboard.writeText(text);
@@ -787,6 +974,35 @@ function openModal(html) {
 }
 
 function closeModal() {
+  if (confirmResolver) {
+    confirmResolver(false);
+    confirmResolver = null;
+  }
+  orderDraft = null;
+  modalRoot.innerHTML = "";
+}
+
+function confirmAction({ title, message, confirmText = "确认" }) {
+  return new Promise((resolve) => {
+    confirmResolver = resolve;
+    openModal(`
+      <div class="modal confirm-modal">
+        <h2>${escapeHtml(title)}</h2>
+        <p class="meta">${escapeHtml(message)}</p>
+        <div class="modal-actions">
+          <button type="button" onclick="resolveConfirm(false)">取消</button>
+          <button class="danger solid-danger" type="button" onclick="resolveConfirm(true)">${escapeHtml(confirmText)}</button>
+        </div>
+      </div>
+    `);
+  });
+}
+
+function resolveConfirm(value) {
+  if (confirmResolver) {
+    confirmResolver(value);
+    confirmResolver = null;
+  }
   orderDraft = null;
   modalRoot.innerHTML = "";
 }
@@ -795,20 +1011,20 @@ async function run(task) {
   try {
     await task();
   } catch (error) {
-    showToast(error.message || "操作失败");
+    showToast(error.message || "操作失败", error.isConnectionError ? 6000 : 2000);
     await loadStatus().catch(() => {});
     render();
   }
 }
 
 let toastTimer = null;
-function showToast(message) {
+function showToast(message, duration = 2000) {
   toastEl.textContent = message;
   toastEl.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => {
     toastEl.hidden = true;
-  }, 2000);
+  }, duration);
 }
 
 function escapeHtml(value) {

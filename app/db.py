@@ -70,80 +70,7 @@ class EncryptedDatabase:
 
     def initialize(self):
         self.conn.executescript(SCHEMA_SQL)
-        self._migrate()
         self.conn.commit()
-
-    def _migrate(self):
-        self._add_column_if_missing("llm_providers", "sort_order", "INTEGER DEFAULT 0")
-        self._add_column_if_missing("llm_providers", "test_key_id", "INTEGER")
-        self._add_column_if_missing("api_keys", "sort_order", "INTEGER DEFAULT 0")
-        self._add_column_if_missing("generic_keys", "sort_order", "INTEGER DEFAULT 0")
-        self.conn.execute("UPDATE llm_providers SET api_format = REPLACE(api_format, 'openai_chat', 'openai_response')")
-        self.conn.execute(
-            """
-            INSERT OR IGNORE INTO app_settings (id, system_prompt, user_prompt)
-            VALUES (1, '你是一个有帮助的助手。', '你是什么模型？请用一句话回答。')
-            """
-        )
-        app_setting_columns = self._column_names("app_settings")
-        if "test_model" in app_setting_columns:
-            self.conn.execute(
-                """
-                INSERT OR IGNORE INTO test_configs (provider_id, test_model)
-                SELECT id, COALESCE((SELECT test_model FROM app_settings WHERE id = 1), '')
-                FROM llm_providers
-                """
-            )
-        else:
-            self.conn.execute(
-                """
-                INSERT OR IGNORE INTO test_configs (provider_id, test_model)
-                SELECT id, ''
-                FROM llm_providers
-                """
-            )
-        self._normalize_sort_order("llm_providers", "id", None)
-        self._normalize_sort_order("api_keys", "id", "provider_id")
-        self._normalize_sort_order("generic_keys", "id", "category")
-        self._sync_generic_categories()
-
-    def _add_column_if_missing(self, table, column, definition):
-        if column not in self._column_names(table):
-            self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-
-    def _column_names(self, table):
-        rows = self.conn.execute(f"PRAGMA table_info({table})").fetchall()
-        return {row["name"] for row in rows}
-
-    def _normalize_sort_order(self, table, id_column, group_column):
-        if group_column:
-            groups = self.conn.execute(f"SELECT DISTINCT {group_column} AS group_value FROM {table}").fetchall()
-            for group in groups:
-                rows = self.conn.execute(
-                    f"SELECT {id_column} AS item_id FROM {table} WHERE {group_column} = ? ORDER BY sort_order, {id_column}",
-                    (group["group_value"],),
-                ).fetchall()
-                for index, row in enumerate(rows, start=1):
-                    self.conn.execute(f"UPDATE {table} SET sort_order = ? WHERE {id_column} = ?", (index, row["item_id"]))
-            return
-        rows = self.conn.execute(f"SELECT {id_column} AS item_id FROM {table} ORDER BY sort_order, {id_column}").fetchall()
-        for index, row in enumerate(rows, start=1):
-            self.conn.execute(f"UPDATE {table} SET sort_order = ? WHERE {id_column} = ?", (index, row["item_id"]))
-
-    def _sync_generic_categories(self):
-        rows = self.conn.execute(
-            """
-            SELECT category, MIN(sort_order) AS first_order
-            FROM generic_keys
-            GROUP BY category
-            ORDER BY first_order, category
-            """
-        ).fetchall()
-        for index, row in enumerate(rows, start=1):
-            self.conn.execute(
-                "INSERT OR IGNORE INTO generic_categories (category, sort_order) VALUES (?, ?)",
-                (row["category"], index),
-            )
 
     def close(self):
         if self.conn is not None:
@@ -183,6 +110,7 @@ CREATE TABLE IF NOT EXISTS llm_providers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
     base_url TEXT NOT NULL,
+    website_url TEXT DEFAULT '',
     api_format TEXT NOT NULL,
     test_key_id INTEGER,
     sort_order INTEGER DEFAULT 0,
@@ -196,7 +124,6 @@ CREATE TABLE IF NOT EXISTS api_keys (
     provider_id INTEGER NOT NULL,
     key_name TEXT NOT NULL,
     api_key TEXT NOT NULL,
-    is_active BOOLEAN DEFAULT 1,
     last_tested TIMESTAMP,
     test_status TEXT DEFAULT 'untested',
     test_message TEXT,
@@ -226,6 +153,12 @@ CREATE TABLE IF NOT EXISTS model_cache (
     FOREIGN KEY (provider_id) REFERENCES llm_providers(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS generic_categories (
+    category TEXT PRIMARY KEY,
+    description TEXT DEFAULT '',
+    sort_order INTEGER DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS generic_keys (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     category TEXT NOT NULL,
@@ -234,12 +167,8 @@ CREATE TABLE IF NOT EXISTS generic_keys (
     description TEXT,
     sort_order INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(category, key_name)
-);
-
-CREATE TABLE IF NOT EXISTS generic_categories (
-    category TEXT PRIMARY KEY,
-    sort_order INTEGER DEFAULT 0
+    UNIQUE(category, key_name),
+    FOREIGN KEY (category) REFERENCES generic_categories(category) ON UPDATE CASCADE ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_api_keys_provider ON api_keys(provider_id);

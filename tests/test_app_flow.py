@@ -32,11 +32,13 @@ class AppFlowTests(unittest.TestCase):
             json={
                 "name": "OpenAI",
                 "base_url": "https://api.openai.com/v1",
-                "api_formats": ["openai_response"],
+                "website_url": "https://openai.com",
+                "api_formats": ["openai_chat_completion", "openai_response"],
             },
         ).get_json()
         self.assertTrue(provider["ok"])
         provider_id = provider["data"]["id"]
+        self.assertEqual(provider["data"]["website_url"], "https://openai.com")
 
         key = self.client.post(
             f"/api/providers/{provider_id}/keys",
@@ -68,19 +70,37 @@ class AppFlowTests(unittest.TestCase):
         self.assertTrue(test_config["ok"])
         self.assertEqual(test_config["data"]["test_model"], "gpt-test")
 
-        generic = self.client.post(
-            "/api/generic",
-            json={
-                "category": "Tavily",
-                "key_name": "api_key",
-                "key_value": "tvly-test-123456",
-                "description": "搜索服务",
-            },
+        category = self.client.post(
+            "/api/generic/categories",
+            json={"category": "Tavily", "description": "搜索服务"},
         ).get_json()
-        self.assertTrue(generic["ok"])
+        self.assertTrue(category["ok"])
+        self.assertEqual(category["data"]["description"], "搜索服务")
+
+        first_generic = self.client.post(
+            "/api/generic",
+            json={"category": "Tavily", "key_name": "api_key", "key_value": "tvly-test-123456"},
+        ).get_json()
+        second_generic = self.client.post(
+            "/api/generic",
+            json={"category": "Tavily", "key_name": "backup_key", "key_value": "tvly-test-654321"},
+        ).get_json()
+        self.assertTrue(first_generic["ok"])
+        self.assertTrue(second_generic["ok"])
 
         categories = self.client.get("/api/generic").get_json()
         self.assertEqual(categories["data"][0]["category"], "Tavily")
+        self.assertEqual(len(categories["data"][0]["items"]), 2)
+
+        renamed = self.client.put(
+            "/api/generic/category/Tavily",
+            json={"category": "Tavily搜索", "description": "搜索服务配置"},
+        ).get_json()
+        self.assertTrue(renamed["ok"])
+        categories = self.client.get("/api/generic").get_json()
+        self.assertEqual(categories["data"][0]["category"], "Tavily搜索")
+        self.assertEqual(categories["data"][0]["description"], "搜索服务配置")
+        self.assertEqual(len(categories["data"][0]["items"]), 2)
 
     def test_reorder_providers_and_generic_categories(self):
         self.client.post(
@@ -93,16 +113,16 @@ class AppFlowTests(unittest.TestCase):
         ).get_json()["data"]
         second = self.client.post(
             "/api/providers",
-            json={"name": "A", "base_url": "https://a.example.com", "api_formats": ["openai_completion"]},
+            json={"name": "A", "base_url": "https://a.example.com", "api_formats": ["openai_chat_completion"]},
         ).get_json()["data"]
         reordered = self.client.put("/api/providers/order", json={"ids": [second["id"], first["id"]]}).get_json()
         self.assertEqual([item["name"] for item in reordered["data"]], ["A", "B"])
 
-        one = self.client.post("/api/generic", json={"category": "后", "key_name": "k", "key_value": "v"}).get_json()["data"]
-        two = self.client.post("/api/generic", json={"category": "前", "key_name": "k", "key_value": "v"}).get_json()["data"]
+        one = self.client.post("/api/generic/categories", json={"category": "后"}).get_json()["data"]
+        two = self.client.post("/api/generic/categories", json={"category": "前"}).get_json()["data"]
         categories = self.client.put("/api/generic/categories/order", json={"categories": ["前", "后"]}).get_json()
         self.assertEqual([item["category"] for item in categories["data"]], ["前", "后"])
-        self.assertNotEqual(one["id"], two["id"])
+        self.assertNotEqual(one["category"], two["category"])
 
 
 if __name__ == "__main__":

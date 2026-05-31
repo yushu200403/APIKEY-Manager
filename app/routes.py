@@ -183,6 +183,18 @@ def reorder_generic_categories():
     return json_ok(store().reorder_generic_categories(body().get("categories")))
 
 
+@api_bp.post("/generic/categories")
+@handle_errors
+def add_generic_category():
+    return json_ok(store().add_generic_category(body()))
+
+
+@api_bp.put("/generic/category/<path:category>")
+@handle_errors
+def update_generic_category(category):
+    return json_ok(store().update_generic_category(category, body()))
+
+
 @api_bp.put("/generic/category/<path:category>/order")
 @handle_errors
 def reorder_generic_keys(category):

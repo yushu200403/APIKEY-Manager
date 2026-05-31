@@ -17,9 +17,9 @@ class ValidatorTests(unittest.TestCase):
     def test_normalize_formats_deduplicates_and_rejects_unknown(self):
         self.assertEqual(
             normalize_formats(["openai_chat", "openai_response", "anthropic_message"]),
-            "openai_response,anthropic_message",
+            "openai_chat_completion,openai_response,anthropic_message",
         )
-        self.assertEqual(normalize_formats(["openai_completion"]), "openai_completion")
+        self.assertEqual(normalize_formats(["openai_chat_completion"]), "openai_chat_completion")
         with self.assertRaises(ValueError):
             normalize_formats(["unknown"])
 

@@ -10,7 +10,7 @@ def choose_format(api_format, preferred=None):
     formats = parse_formats(api_format)
     if preferred and preferred in formats:
         return preferred
-    for item in ("openai_response", "openai_completion", "anthropic_message"):
+    for item in ("openai_response", "openai_chat_completion", "anthropic_message"):
         if item in formats:
             return item
     raise ValueError("供应商没有可用的API格式")
@@ -23,8 +23,8 @@ def test_chat_endpoint(provider, api_key, config):
         raise ValueError("请先填写测试模型")
     if fmt == "openai_response":
         return _test_openai_response(provider["base_url"], api_key, config, model)
-    if fmt == "openai_completion":
-        return _test_openai_completion(provider["base_url"], api_key, config, model)
+    if fmt == "openai_chat_completion":
+        return _test_openai_chat_completion(provider["base_url"], api_key, config, model)
     if fmt == "anthropic_message":
         return _test_anthropic_message(provider["base_url"], api_key, config, model)
     raise ValueError(f"不支持的API格式：{fmt}")
@@ -84,21 +84,24 @@ def _test_openai_response(base_url, api_key, config, model):
     return _summary(text, "请求成功，但响应中没有文本内容")
 
 
-def _test_openai_completion(base_url, api_key, config, model):
+def _test_openai_chat_completion(base_url, api_key, config, model):
     body = {
         "model": model,
-        "prompt": f"{config['system_prompt']}\n\n{config['user_prompt']}",
+        "messages": [
+            {"role": "system", "content": config["system_prompt"]},
+            {"role": "user", "content": config["user_prompt"]},
+        ],
         "max_tokens": 50,
     }
     response = _request(
         "post",
-        base_url.rstrip("/") + "/completions",
-        headers=_headers("openai_completion", api_key),
+        base_url.rstrip("/") + "/chat/completions",
+        headers=_headers("openai_chat_completion", api_key),
         json=body,
     )
     payload = _parse_response(response)
     choices = payload.get("choices") or []
-    text = choices[0].get("text", "") if choices else ""
+    text = _extract_chat_completion_text(choices[0]) if choices else ""
     return _summary(text, "请求成功，但响应中没有文本内容")
 
 
@@ -146,6 +149,20 @@ def _extract_response_text(payload):
                 if text:
                     text_parts.append(text)
     return "\n".join(text_parts)
+
+
+def _extract_chat_completion_text(choice):
+    message = choice.get("message") or {}
+    content = message.get("content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text_parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("text"):
+                text_parts.append(item["text"])
+        return "\n".join(text_parts)
+    return choice.get("text", "")
 
 
 def _request(method, url, **kwargs):

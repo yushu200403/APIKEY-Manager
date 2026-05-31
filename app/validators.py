@@ -1,8 +1,12 @@
 from urllib.parse import urlparse
 
 
-SUPPORTED_FORMATS = {"openai_completion", "openai_response", "anthropic_message"}
-FORMAT_ALIASES = {"openai_chat": "openai_response"}
+SUPPORTED_FORMATS = {
+    "openai_chat_completion",
+    "openai_response",
+    "anthropic_message",
+}
+FORMAT_ALIASES = {"openai_chat": "openai_chat_completion"}
 
 
 def require_text(value, field_name):
