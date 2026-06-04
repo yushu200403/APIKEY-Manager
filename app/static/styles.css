@@ -468,6 +468,11 @@ tr:last-child td {
   text-align: center;
 }
 
+.model-row.filtered-out,
+.model-empty.filtered-out {
+  display: none;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;

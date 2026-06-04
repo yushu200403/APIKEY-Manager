@@ -355,12 +355,12 @@ function renderModelsSection(provider) {
         </div>
         <div class="model-list">
           ${cache.model_ids.map((model) => `
-            <div class="model-row" data-model="${escapeAttr(String(model).toLowerCase())}">
+            <div class="model-row">
               <span class="secret">${escapeHtml(model)}</span>
               <button type="button" onclick="copyText(${jsLiteral(model)})">复制</button>
             </div>
           `).join("")}
-          <div class="model-empty" hidden>没有匹配的模型</div>
+          <div class="model-empty filtered-out">没有匹配的模型</div>
         </div>
       ` : `<div class="empty">暂无模型缓存</div>`}
     </section>
@@ -711,14 +711,17 @@ function filterModelList(input) {
   if (!section) return;
   const keyword = input.value.trim().toLowerCase();
   const rows = Array.from(section.querySelectorAll(".model-row"));
+  const list = section.querySelector(".model-list");
   let visibleCount = 0;
   for (const row of rows) {
-    const matched = !keyword || row.dataset.model.includes(keyword);
-    row.hidden = !matched;
+    const modelName = row.querySelector(".secret")?.textContent.toLowerCase() || "";
+    const matched = !keyword || modelName.includes(keyword);
+    row.classList.toggle("filtered-out", !matched);
     if (matched) visibleCount += 1;
   }
   const empty = section.querySelector(".model-empty");
-  if (empty) empty.hidden = visibleCount > 0;
+  if (empty) empty.classList.toggle("filtered-out", visibleCount > 0);
+  if (list) list.scrollTop = 0;
 }
 
 async function saveGlobalTestSettings(event) {
