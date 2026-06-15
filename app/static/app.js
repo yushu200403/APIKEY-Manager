@@ -481,6 +481,15 @@ function renderSettingsView() {
         </div>
       </div>
       <div class="settings-item">
+        <strong>数据导入导出</strong>
+        <div class="meta">导出的 JSON、Markdown 和数据库文件都包含真实密钥值，请只保存到可信位置。导入仅支持本应用导出的 JSON，并会替换当前数据库内容。</div>
+        <div class="toolbar settings-actions">
+          <button type="button" onclick="openExportModal()">导出数据</button>
+          <button type="button" onclick="downloadDatabase()">下载数据库</button>
+          <button class="primary" type="button" onclick="openImportModal()">导入 JSON</button>
+        </div>
+      </div>
+      <div class="settings-item">
         <strong>安全说明</strong>
         <div class="meta">主密码不会明文保存。数据库文件使用 SQLCipher 打开，忘记主密码后无法恢复数据。</div>
       </div>
@@ -736,6 +745,133 @@ async function saveGlobalTestSettings(event) {
   });
 }
 
+function openExportModal() {
+  openModal(`
+    <div class="modal">
+      <h2>导出数据</h2>
+      <div class="export-options">
+        <label class="check">
+          <input id="export-include-tests" type="checkbox" />
+          导出测试相关数据
+        </label>
+        <div class="hint">默认精简导出，只保存供应商、密钥和通用密钥等必要数据；勾选后会包含测试设置、测试模型、模型缓存和测试记录。</div>
+      </div>
+      <p class="meta">选择导出格式和保存方式。JSON 适合备份恢复，Markdown 适合人工查看；两种格式都会包含完整密钥。</p>
+      <div class="export-grid">
+        <button type="button" onclick="exportData('json', 'copy')">
+          <strong>复制 JSON</strong>
+          <span>复制到剪贴板，用于临时备份或转存。</span>
+        </button>
+        <button type="button" onclick="exportData('json', 'file')">
+          <strong>保存 JSON 文件</strong>
+          <span>下载可再次导入的备份文件。</span>
+        </button>
+        <button type="button" onclick="exportData('markdown', 'copy')">
+          <strong>复制 Markdown</strong>
+          <span>复制便于粘贴到笔记或文档。</span>
+        </button>
+        <button type="button" onclick="exportData('markdown', 'file')">
+          <strong>保存 Markdown 文件</strong>
+          <span>下载便于阅读的清单文件。</span>
+        </button>
+      </div>
+      <div class="modal-actions">
+        <button type="button" onclick="closeModal()">关闭</button>
+      </div>
+    </div>
+  `);
+}
+
+async function exportData(format, target) {
+  await run(async () => {
+    const includeTests = document.getElementById("export-include-tests")?.checked ? "1" : "0";
+    const data = await api(`/api/data/export/${format}?include_tests=${includeTests}`);
+    if (target === "copy") {
+      await navigator.clipboard.writeText(data.content);
+      showToast(`已复制${format === "json" ? "JSON" : "Markdown"}导出内容`);
+      return;
+    }
+    saveTextFile(data.filename, data.content, data.mime_type);
+    showToast("已开始保存导出文件");
+  });
+}
+
+function downloadDatabase() {
+  const link = document.createElement("a");
+  link.href = "/api/data/export/database";
+  link.download = "apikeys.db";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  showToast("已开始下载数据库文件");
+}
+
+function openImportModal() {
+  openModal(`
+    <form class="modal" onsubmit="submitImportJson(event)">
+      <h2>导入 JSON</h2>
+      <p class="meta">导入会替换当前数据库中的供应商、密钥、通用密钥、测试配置和模型缓存。请先导出一份 JSON 备份。</p>
+      <div class="toolbar import-actions">
+        <button type="button" onclick="document.getElementById('import-json-file').click()">选择 JSON 文件</button>
+        <button type="button" onclick="readImportClipboard()">从剪贴板读取</button>
+      </div>
+      <input id="import-json-file" class="file-input" type="file" accept="application/json,.json" onchange="handleImportFile(event)" />
+      <div class="field">
+        <label>JSON 内容</label>
+        <textarea id="import-json-text" class="import-textarea" placeholder="选择文件，或从剪贴板读取 JSON 内容。"></textarea>
+      </div>
+      <div class="modal-actions">
+        <button type="button" onclick="closeModal()">取消</button>
+        <button class="primary" type="submit">导入并替换</button>
+      </div>
+    </form>
+  `);
+}
+
+async function handleImportFile(event) {
+  await run(async () => {
+    const file = event.target.files[0];
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith(".json")) throw new Error("请选择 JSON 文件");
+    document.getElementById("import-json-text").value = await file.text();
+    showToast("已读取 JSON 文件");
+  });
+}
+
+async function readImportClipboard() {
+  await run(async () => {
+    const text = await navigator.clipboard.readText();
+    if (!text.trim()) throw new Error("剪贴板没有可导入内容");
+    document.getElementById("import-json-text").value = text;
+    showToast("已读取剪贴板内容");
+  });
+}
+
+async function submitImportJson(event) {
+  event.preventDefault();
+  await run(async () => {
+    const text = document.getElementById("import-json-text").value.trim();
+    if (!text) throw new Error("请先提供 JSON 内容");
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (error) {
+      throw new Error("JSON 解析失败，请检查导入内容");
+    }
+    const confirmed = await confirmAction({
+      title: "确认导入",
+      message: "导入后当前数据库内容会被 JSON 文件内容替换。该操作无法撤销。",
+      confirmText: "导入并替换",
+    });
+    if (!confirmed) return;
+    const result = await api("/api/data/import/json", jsonOptions("POST", { data }));
+    state.selectedProviderId = null;
+    state.selectedGenericCategory = null;
+    await afterUnlock();
+    showToast(`导入完成：${result.providers} 个供应商，${result.generic_categories} 个类别`, 4000);
+  });
+}
+
 function selectGenericCategory(category) {
   state.selectedGenericCategory = category;
   render();
@@ -970,6 +1106,18 @@ async function copyText(text) {
     await navigator.clipboard.writeText(text);
     showToast("已复制");
   });
+}
+
+function saveTextFile(filename, content, mimeType) {
+  const blob = new Blob([content], { type: `${mimeType || "text/plain"};charset=utf-8` });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 function openModal(html) {

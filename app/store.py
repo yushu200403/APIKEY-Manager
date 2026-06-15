@@ -1,6 +1,7 @@
 import json
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 
 from .api_client import fetch_model_ids, test_chat_endpoint
 from .db import EncryptedDatabase, database_path
@@ -15,6 +16,9 @@ from .validators import (
 
 DEFAULT_SYSTEM_PROMPT = "你是一个有帮助的助手。"
 DEFAULT_USER_PROMPT = "你是什么模型？请用一句话回答。"
+EXPORT_SCHEMA = "apikey-manager-export"
+EXPORT_VERSION = 1
+BEIJING_TIMEZONE = timezone(timedelta(hours=8))
 
 
 class Store:
@@ -281,6 +285,156 @@ class Store:
         row["model_ids"] = json.loads(row["model_ids"])
         return row
 
+    def database_file_path(self):
+        self.db()
+        return database_path()
+
+    def export_data(self, include_tests=False):
+        providers = []
+        provider_rows = self.db().query_all("SELECT * FROM llm_providers ORDER BY sort_order, id")
+        for provider in provider_rows:
+            key_rows = self.db().query_all(
+                "SELECT * FROM api_keys WHERE provider_id = ? ORDER BY sort_order, id",
+                (provider["id"],),
+            )
+            provider_data = {
+                "name": provider["name"],
+                "base_url": provider["base_url"],
+                "website_url": provider.get("website_url") or "",
+                "api_formats": provider["api_format"].split(","),
+                "keys": [
+                    {
+                        "key_name": key["key_name"],
+                        "api_key": key["api_key"],
+                    }
+                    for key in key_rows
+                ],
+            }
+            if include_tests:
+                test_config = self.provider_test_config(provider["id"])
+                cache = self.model_cache(provider["id"])
+                test_key_name = ""
+                for key in key_rows:
+                    if key["id"] == provider.get("test_key_id"):
+                        test_key_name = key["key_name"]
+                        break
+                provider_data["test_key_name"] = test_key_name
+                provider_data["test_model"] = test_config.get("test_model") or ""
+                provider_data["model_cache"] = {
+                    "model_ids": cache.get("model_ids") or [],
+                    "last_fetched": cache.get("last_fetched"),
+                }
+                for key_data, key in zip(provider_data["keys"], key_rows):
+                    key_data["test_status"] = key.get("test_status") or "untested"
+                    key_data["test_message"] = key.get("test_message") or ""
+            providers.append(provider_data)
+        data = {
+            "schema": EXPORT_SCHEMA,
+            "version": EXPORT_VERSION,
+            "exported_at": self._export_time(),
+            "include_tests": include_tests,
+            "providers": providers,
+            "generic_categories": self._export_generic_categories(),
+        }
+        if include_tests:
+            data["test_settings"] = self.test_settings()
+        return data
+
+    def export_json_text(self, include_tests=False):
+        return json.dumps(self.export_data(include_tests), ensure_ascii=False, indent=2)
+
+    def export_markdown_text(self, include_tests=False):
+        data = self.export_data(include_tests)
+        lines = [
+            "# APIKEY Manager 导出",
+            "",
+            f"- 导出时间：{data['exported_at']}",
+            "",
+        ]
+        if include_tests:
+            lines.extend([
+                "## 测试 Prompt 设置",
+                "",
+                f"- System Prompt：{data['test_settings']['system_prompt']}",
+                f"- User Prompt：{data['test_settings']['user_prompt']}",
+                "",
+            ])
+        lines.extend(["## 大模型供应商", ""])
+        if data["providers"]:
+            for provider in data["providers"]:
+                provider_lines = [
+                    f"### {provider['name']}",
+                    "",
+                    f"- API 端点：`{provider['base_url']}`",
+                    f"- 官网地址：{provider['website_url'] or '-'}",
+                ]
+                if include_tests:
+                    provider_lines.extend([
+                        f"- 接口格式：{', '.join(provider['api_formats'])}",
+                        f"- 测试密钥：{provider['test_key_name'] or '-'}",
+                        f"- 测试模型：{provider['test_model'] or '-'}",
+                    ])
+                provider_lines.append("")
+                if include_tests:
+                    provider_lines.extend(["| 密钥别名 | API Key | 测试状态 | 测试消息 |", "| --- | --- | --- | --- |"])
+                else:
+                    provider_lines.extend(["| 密钥别名 | API Key |", "| --- | --- |"])
+                lines.extend(provider_lines)
+                if provider["keys"]:
+                    for key in provider["keys"]:
+                        if include_tests:
+                            lines.append(
+                                f"| {self._markdown_cell(key['key_name'])} | `{self._markdown_cell(key['api_key'])}` | "
+                                f"{self._markdown_cell(key['test_status'])} | {self._markdown_cell(key['test_message'] or '-')} |"
+                            )
+                        else:
+                            lines.append(f"| {self._markdown_cell(key['key_name'])} | `{self._markdown_cell(key['api_key'])}` |")
+                else:
+                    lines.append("| - | - | - | - |" if include_tests else "| - | - |")
+                lines.append("")
+        else:
+            lines.extend(["暂无大模型供应商。", ""])
+        lines.extend(["## 通用密钥", ""])
+        if data["generic_categories"]:
+            for group in data["generic_categories"]:
+                lines.extend([
+                    f"### {group['category']}",
+                    "",
+                    f"- 描述：{group['description'] or '-'}",
+                    "",
+                    "| 键名 | 键值 | 描述 |",
+                    "| --- | --- | --- |",
+                ])
+                if group["items"]:
+                    for item in group["items"]:
+                        lines.append(
+                            f"| {self._markdown_cell(item['key_name'])} | `{self._markdown_cell(item['key_value'])}` | "
+                            f"{self._markdown_cell(item['description'] or '-')} |"
+                        )
+                else:
+                    lines.append("| - | - | - |")
+                lines.append("")
+        else:
+            lines.extend(["暂无通用密钥。", ""])
+        return "\n".join(lines).rstrip() + "\n"
+
+    def import_json_data(self, payload):
+        data = self._normalize_import_payload(payload)
+        with self._lock:
+            conn = self.db().conn
+            try:
+                conn.execute("BEGIN")
+                self._clear_importable_tables(conn)
+                self._insert_import_data(conn, data)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return {
+            "providers": len(data["providers"]),
+            "generic_categories": len(data["generic_categories"]),
+        }
+
     def generic_categories(self):
         category_rows = self.db().query_all(
             "SELECT * FROM generic_categories ORDER BY sort_order, category"
@@ -483,3 +637,201 @@ class Store:
         if not text:
             return ""
         return validate_url(text)
+
+    def _export_generic_categories(self):
+        groups = []
+        category_rows = self.db().query_all("SELECT * FROM generic_categories ORDER BY sort_order, category")
+        for category in category_rows:
+            item_rows = self.db().query_all(
+                "SELECT * FROM generic_keys WHERE category = ? ORDER BY sort_order, id",
+                (category["category"],),
+            )
+            groups.append({
+                "category": category["category"],
+                "description": category.get("description") or "",
+                "items": [
+                    {
+                        "key_name": item["key_name"],
+                        "key_value": item["key_value"],
+                        "description": item.get("description") or "",
+                    }
+                    for item in item_rows
+                ],
+            })
+        return groups
+
+    def _normalize_import_payload(self, payload):
+        if not isinstance(payload, dict):
+            raise ValueError("导入内容必须是JSON对象")
+        if payload.get("schema") != EXPORT_SCHEMA:
+            raise ValueError("JSON格式不匹配，请导入本应用导出的文件")
+        try:
+            version = int(payload.get("version") or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("导入文件版本号不正确") from exc
+        if version > EXPORT_VERSION:
+            raise ValueError("导入文件版本高于当前应用支持版本")
+        settings = payload.get("test_settings") or {}
+        providers = payload.get("providers") or []
+        generic_categories = payload.get("generic_categories") or []
+        if not isinstance(providers, list) or not isinstance(generic_categories, list):
+            raise ValueError("导入数据结构不完整")
+        normalized = {
+            "test_settings": {
+                "system_prompt": require_text(settings.get("system_prompt") or DEFAULT_SYSTEM_PROMPT, "System Prompt"),
+                "user_prompt": require_text(settings.get("user_prompt") or DEFAULT_USER_PROMPT, "User Prompt"),
+            },
+            "providers": [],
+            "generic_categories": [],
+        }
+        seen_providers = set()
+        for provider in providers:
+            if not isinstance(provider, dict):
+                raise ValueError("供应商数据必须是对象")
+            name = require_text(provider.get("name"), "供应商名称")
+            if name in seen_providers:
+                raise ValueError(f"供应商名称重复：{name}")
+            seen_providers.add(name)
+            keys = provider.get("keys") or []
+            if not isinstance(keys, list):
+                raise ValueError(f"{name} 的密钥列表格式不正确")
+            normalized["providers"].append({
+                "name": name,
+                "base_url": validate_url(provider.get("base_url")),
+                "website_url": self._optional_url(provider.get("website_url")),
+                "api_format": normalize_formats(provider.get("api_formats") or provider.get("api_format")),
+                "test_key_name": str(provider.get("test_key_name") or "").strip(),
+                "test_model": str(provider.get("test_model") or "").strip(),
+                "model_cache": self._normalize_model_cache(provider.get("model_cache")),
+                "keys": self._normalize_import_keys(keys, name),
+            })
+        seen_categories = set()
+        for group in generic_categories:
+            if not isinstance(group, dict):
+                raise ValueError("通用密钥类别数据必须是对象")
+            category = require_text(group.get("category"), "类别名称")
+            if category in seen_categories:
+                raise ValueError(f"类别名称重复：{category}")
+            seen_categories.add(category)
+            items = group.get("items") or []
+            if not isinstance(items, list):
+                raise ValueError(f"{category} 的键值列表格式不正确")
+            normalized["generic_categories"].append({
+                "category": category,
+                "description": str(group.get("description") or "").strip(),
+                "items": self._normalize_import_generic_items(items, category),
+            })
+        return normalized
+
+    def _normalize_import_keys(self, keys, provider_name):
+        normalized = []
+        seen = set()
+        for key in keys:
+            if not isinstance(key, dict):
+                raise ValueError(f"{provider_name} 的密钥数据必须是对象")
+            key_name = require_text(key.get("key_name"), "密钥别名")
+            if key_name in seen:
+                raise ValueError(f"{provider_name} 下密钥别名重复：{key_name}")
+            seen.add(key_name)
+            normalized.append({
+                "key_name": key_name,
+                "api_key": require_text(key.get("api_key"), "API密钥"),
+                "test_status": str(key.get("test_status") or "untested").strip() or "untested",
+                "test_message": str(key.get("test_message") or "").strip(),
+            })
+        return normalized
+
+    def _normalize_import_generic_items(self, items, category):
+        normalized = []
+        seen = set()
+        for item in items:
+            if not isinstance(item, dict):
+                raise ValueError(f"{category} 的键值数据必须是对象")
+            key_name = require_text(item.get("key_name"), "键名")
+            if key_name in seen:
+                raise ValueError(f"{category} 下键名重复：{key_name}")
+            seen.add(key_name)
+            normalized.append({
+                "key_name": key_name,
+                "key_value": require_text(item.get("key_value"), "键值"),
+                "description": str(item.get("description") or "").strip(),
+            })
+        return normalized
+
+    def _normalize_model_cache(self, value):
+        if not isinstance(value, dict):
+            return {"model_ids": [], "last_fetched": None}
+        model_ids = value.get("model_ids") or []
+        if not isinstance(model_ids, list):
+            model_ids = []
+        return {
+            "model_ids": [str(item).strip() for item in model_ids if str(item).strip()],
+            "last_fetched": str(value.get("last_fetched") or "").strip() or None,
+        }
+
+    def _clear_importable_tables(self, conn):
+        for table in ("model_cache", "test_configs", "api_keys", "llm_providers", "generic_keys", "generic_categories", "app_settings"):
+            conn.execute(f"DELETE FROM {table}")
+
+    def _insert_import_data(self, conn, data):
+        conn.execute(
+            "INSERT INTO app_settings (id, system_prompt, user_prompt) VALUES (1, ?, ?)",
+            (data["test_settings"]["system_prompt"], data["test_settings"]["user_prompt"]),
+        )
+        for provider_index, provider in enumerate(data["providers"], start=1):
+            cur = conn.execute(
+                """
+                INSERT INTO llm_providers (name, base_url, website_url, api_format, sort_order)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (provider["name"], provider["base_url"], provider["website_url"], provider["api_format"], provider_index),
+            )
+            provider_id = cur.lastrowid
+            test_key_id = None
+            for key_index, key in enumerate(provider["keys"], start=1):
+                key_cur = conn.execute(
+                    """
+                    INSERT INTO api_keys (provider_id, key_name, api_key, test_status, test_message, sort_order)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (provider_id, key["key_name"], key["api_key"], key["test_status"], key["test_message"], key_index),
+                )
+                if provider["test_key_name"] and key["key_name"] == provider["test_key_name"]:
+                    test_key_id = key_cur.lastrowid
+            if test_key_id is None and provider["keys"]:
+                row = conn.execute(
+                    "SELECT id FROM api_keys WHERE provider_id = ? ORDER BY sort_order, id LIMIT 1",
+                    (provider_id,),
+                ).fetchone()
+                test_key_id = row["id"] if row else None
+            conn.execute("INSERT INTO test_configs (provider_id, test_model) VALUES (?, ?)", (provider_id, provider["test_model"]))
+            if test_key_id:
+                conn.execute("UPDATE llm_providers SET test_key_id = ? WHERE id = ?", (test_key_id, provider_id))
+            if provider["model_cache"]["model_ids"]:
+                conn.execute(
+                    "INSERT INTO model_cache (provider_id, model_ids, last_fetched) VALUES (?, ?, ?)",
+                    (
+                        provider_id,
+                        json.dumps(provider["model_cache"]["model_ids"], ensure_ascii=False),
+                        provider["model_cache"]["last_fetched"],
+                    ),
+                )
+        for category_index, group in enumerate(data["generic_categories"], start=1):
+            conn.execute(
+                "INSERT INTO generic_categories (category, description, sort_order) VALUES (?, ?, ?)",
+                (group["category"], group["description"], category_index),
+            )
+            for item_index, item in enumerate(group["items"], start=1):
+                conn.execute(
+                    """
+                    INSERT INTO generic_keys (category, key_name, key_value, description, sort_order)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (group["category"], item["key_name"], item["key_value"], item["description"], item_index),
+                )
+
+    def _markdown_cell(self, value):
+        return str(value or "").replace("|", "\\|").replace("\n", "<br>")
+
+    def _export_time(self):
+        return datetime.now(BEIJING_TIMEZONE).strftime("%Y-%m-%d %H:%M")

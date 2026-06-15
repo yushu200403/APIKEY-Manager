@@ -1,4 +1,5 @@
 import os
+import json
 import tempfile
 import unittest
 
@@ -123,6 +124,100 @@ class AppFlowTests(unittest.TestCase):
         categories = self.client.put("/api/generic/categories/order", json={"categories": ["前", "后"]}).get_json()
         self.assertEqual([item["category"] for item in categories["data"]], ["前", "后"])
         self.assertNotEqual(one["category"], two["category"])
+
+    def test_export_and_import_json_data(self):
+        self.client.post(
+            "/api/create",
+            json={"password": "StrongPass123!", "confirm_password": "StrongPass123!"},
+        )
+        provider = self.client.post(
+            "/api/providers",
+            json={
+                "name": "OpenAI",
+                "base_url": "https://api.openai.com/v1",
+                "website_url": "https://openai.com",
+                "api_formats": ["openai_chat_completion"],
+            },
+        ).get_json()["data"]
+        self.client.post(
+            f"/api/providers/{provider['id']}/keys",
+            json={"key_name": "主账号", "api_key": "sk-test-123456"},
+        )
+        self.client.put(
+            f"/api/providers/{provider['id']}/test-config",
+            json={"test_model": "gpt-test"},
+        )
+        self.client.post("/api/generic/categories", json={"category": "Tavily", "description": "搜索服务"})
+        self.client.post(
+            "/api/generic",
+            json={"category": "Tavily", "key_name": "api_key", "key_value": "tvly-test-123456", "description": "主密钥"},
+        )
+
+        exported_json = self.client.get("/api/data/export/json").get_json()
+        self.assertTrue(exported_json["ok"])
+        payload = json.loads(exported_json["data"]["content"])
+        self.assertEqual(payload["schema"], "apikey-manager-export")
+        self.assertRegex(payload["exported_at"], r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
+        self.assertFalse(payload["include_tests"])
+        self.assertNotIn("test_settings", payload)
+        self.assertNotIn("test_key_name", payload["providers"][0])
+        self.assertNotIn("test_model", payload["providers"][0])
+        self.assertNotIn("model_cache", payload["providers"][0])
+        self.assertEqual(payload["providers"][0]["keys"][0]["api_key"], "sk-test-123456")
+        self.assertNotIn("test_status", payload["providers"][0]["keys"][0])
+
+        exported_markdown = self.client.get("/api/data/export/markdown").get_json()
+        self.assertTrue(exported_markdown["ok"])
+        self.assertIn("# APIKEY Manager 导出", exported_markdown["data"]["content"])
+        self.assertIn("sk-test-123456", exported_markdown["data"]["content"])
+        self.assertNotIn("供应商数量", exported_markdown["data"]["content"])
+        self.assertNotIn("通用密钥类别数量", exported_markdown["data"]["content"])
+        self.assertNotIn("接口格式", exported_markdown["data"]["content"])
+        self.assertNotIn("测试 Prompt 设置", exported_markdown["data"]["content"])
+
+        full_json = self.client.get("/api/data/export/json?include_tests=1").get_json()
+        full_payload = json.loads(full_json["data"]["content"])
+        self.assertTrue(full_payload["include_tests"])
+        self.assertIn("test_settings", full_payload)
+        self.assertEqual(full_payload["providers"][0]["test_model"], "gpt-test")
+        self.assertIn("test_status", full_payload["providers"][0]["keys"][0])
+
+        full_markdown = self.client.get("/api/data/export/markdown?include_tests=1").get_json()["data"]["content"]
+        self.assertIn("测试 Prompt 设置", full_markdown)
+        self.assertIn("接口格式", full_markdown)
+        self.assertNotIn("供应商数量", full_markdown)
+
+        self.client.post(
+            "/api/providers",
+            json={"name": "临时供应商", "base_url": "https://temp.example.com", "api_formats": ["openai_response"]},
+        )
+        imported = self.client.post("/api/data/import/json", json={"data": payload}).get_json()
+        self.assertTrue(imported["ok"])
+        self.assertEqual(imported["data"]["providers"], 1)
+        self.assertEqual(imported["data"]["generic_categories"], 1)
+
+        providers = self.client.get("/api/providers").get_json()["data"]
+        self.assertEqual([item["name"] for item in providers], ["OpenAI"])
+        detail = self.client.get(f"/api/providers/{providers[0]['id']}").get_json()["data"]
+        self.assertEqual(detail["keys"][0]["api_key"], "sk-test-123456")
+        self.assertEqual(detail["test_config"]["test_model"], "")
+        generic = self.client.get("/api/generic").get_json()["data"]
+        self.assertEqual(generic[0]["items"][0]["key_value"], "tvly-test-123456")
+
+        database = self.client.get("/api/data/export/database")
+        self.assertEqual(database.status_code, 200)
+        self.assertIn("attachment", database.headers["Content-Disposition"])
+        self.assertGreater(len(database.data), 0)
+        database.close()
+
+    def test_import_rejects_unknown_json_schema(self):
+        self.client.post(
+            "/api/create",
+            json={"password": "StrongPass123!", "confirm_password": "StrongPass123!"},
+        )
+        response = self.client.post("/api/data/import/json", json={"data": {"schema": "other"}}).get_json()
+        self.assertFalse(response["ok"])
+        self.assertIn("格式不匹配", response["error"])
 
 
 if __name__ == "__main__":

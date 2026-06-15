@@ -1,6 +1,6 @@
 from functools import wraps
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, current_app, jsonify, request, send_file
 
 
 api_bp = Blueprint("api", __name__)
@@ -33,6 +33,10 @@ def handle_errors(func):
 
 def store():
     return current_app.store
+
+
+def include_tests_arg():
+    return str(request.args.get("include_tests") or "").lower() in {"1", "true", "yes", "on"}
 
 
 @api_bp.get("/status")
@@ -169,6 +173,42 @@ def save_test_config(provider_id):
 @handle_errors
 def refresh_models(provider_id):
     return json_ok(store().refresh_models(provider_id))
+
+
+@api_bp.get("/data/export/json")
+@handle_errors
+def export_json():
+    return json_ok({
+        "filename": "apikey-manager-export.json",
+        "mime_type": "application/json",
+        "content": store().export_json_text(include_tests_arg()),
+    })
+
+
+@api_bp.get("/data/export/markdown")
+@handle_errors
+def export_markdown():
+    return json_ok({
+        "filename": "apikey-manager-export.md",
+        "mime_type": "text/markdown",
+        "content": store().export_markdown_text(include_tests_arg()),
+    })
+
+
+@api_bp.get("/data/export/database")
+@handle_errors
+def export_database():
+    path = store().database_file_path()
+    if not path.exists():
+        raise ValueError("数据库文件不存在")
+    return send_file(path, as_attachment=True, download_name="apikeys.db")
+
+
+@api_bp.post("/data/import/json")
+@handle_errors
+def import_json():
+    payload = body()
+    return json_ok(store().import_json_data(payload.get("data")))
 
 
 @api_bp.get("/generic")

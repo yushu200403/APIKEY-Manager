@@ -586,10 +586,60 @@ tr:last-child td {
   margin-bottom: 6px;
 }
 
+.settings-actions,
+.import-actions {
+  margin-top: 12px;
+}
+
+.export-options {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--line);
+  background: #fafafa;
+  padding: 10px;
+  margin-bottom: 12px;
+}
+
+.export-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.export-grid button {
+  display: grid;
+  gap: 4px;
+  height: auto;
+  min-height: 82px;
+  padding: 12px;
+  text-align: left;
+  align-content: start;
+}
+
+.export-grid strong {
+  margin: 0;
+}
+
+.export-grid span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.file-input {
+  display: none;
+}
+
+.import-textarea {
+  min-height: 220px;
+  font-family: Consolas, "Courier New", monospace;
+}
+
 @media (max-width: 860px) {
   .main-layout,
   .two-pane,
-  .grid-2 {
+  .grid-2,
+  .export-grid {
     grid-template-columns: 1fr;
   }
 
