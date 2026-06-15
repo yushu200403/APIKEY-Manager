@@ -1,9 +1,17 @@
+from dataclasses import dataclass
+
 import requests
 
 from .validators import parse_formats
 
 
 TIMEOUT_SECONDS = 30
+
+
+@dataclass
+class TestResult:
+    message: str
+    reasoning: str = ""
 
 
 def choose_format(api_format, preferred=None):
@@ -81,7 +89,8 @@ def _test_openai_response(base_url, api_key, config, model):
     )
     payload = _parse_response(response)
     text = payload.get("output_text") or _extract_response_text(payload)
-    return _summary(text, "请求成功，但响应中没有文本内容")
+    reasoning = _extract_response_reasoning(payload)
+    return _result(text, "请求成功，但响应中没有文本内容", reasoning)
 
 
 def _test_openai_chat_completion(base_url, api_key, config, model):
@@ -101,8 +110,10 @@ def _test_openai_chat_completion(base_url, api_key, config, model):
     )
     payload = _parse_response(response)
     choices = payload.get("choices") or []
-    text = _extract_chat_completion_text(choices[0]) if choices else ""
-    return _summary(text, "请求成功，但响应中没有文本内容")
+    choice = choices[0] if choices else {}
+    text = _extract_chat_completion_text(choice) if choice else ""
+    reasoning = _extract_chat_completion_reasoning(choice) if choice else ""
+    return _result(text, "请求成功，但响应中没有文本内容", reasoning)
 
 
 def _test_anthropic_message(base_url, api_key, config, model):
@@ -121,10 +132,15 @@ def _test_anthropic_message(base_url, api_key, config, model):
     payload = _parse_response(response)
     content = payload.get("content") or []
     text_parts = []
+    reasoning_parts = []
     for item in content:
-        if isinstance(item, dict) and item.get("text"):
+        if isinstance(item, dict) and item.get("type") != "thinking" and item.get("text"):
             text_parts.append(item["text"])
-    return _summary("\n".join(text_parts), "请求成功，但响应中没有文本内容")
+        if isinstance(item, dict) and item.get("type") == "thinking":
+            reasoning = item.get("thinking") or item.get("text")
+            if reasoning:
+                reasoning_parts.append(str(reasoning))
+    return _result("\n".join(text_parts), "请求成功，但响应中没有文本内容", "\n".join(reasoning_parts))
 
 
 def _parse_response(response):
@@ -165,6 +181,58 @@ def _extract_chat_completion_text(choice):
     return choice.get("text", "")
 
 
+def _extract_response_reasoning(payload):
+    parts = []
+    for output in payload.get("output") or []:
+        if not isinstance(output, dict):
+            continue
+        if output.get("type") == "reasoning":
+            parts.extend(_text_values(output.get("summary")))
+            parts.extend(_text_values(output.get("content")))
+            text = output.get("text")
+            if text:
+                parts.append(str(text))
+        reasoning = output.get("reasoning")
+        if reasoning:
+            parts.extend(_text_values(reasoning))
+    reasoning = payload.get("reasoning")
+    if reasoning:
+        parts.extend(_text_values(reasoning))
+    return "\n".join(part for part in parts if part).strip()
+
+
+def _extract_chat_completion_reasoning(choice):
+    message = choice.get("message") or {}
+    candidates = [
+        message.get("reasoning_content"),
+        message.get("reasoning"),
+        choice.get("reasoning_content"),
+        choice.get("reasoning"),
+    ]
+    parts = []
+    for value in candidates:
+        parts.extend(_text_values(value))
+    return "\n".join(part for part in parts if part).strip()
+
+
+def _text_values(value):
+    if not value:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        parts = []
+        for key in ("text", "content", "summary", "thinking", "reasoning"):
+            parts.extend(_text_values(value.get(key)))
+        return parts
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            parts.extend(_text_values(item))
+        return parts
+    return [str(value)]
+
+
 def _request(method, url, **kwargs):
     try:
         return requests.request(method, url, timeout=TIMEOUT_SECONDS, **kwargs)
@@ -177,5 +245,12 @@ def _request(method, url, **kwargs):
 def _summary(text, fallback):
     text = (text or "").strip()
     if not text:
-        return fallback
+        raise ValueError(fallback)
     return text[:300]
+
+
+def _result(text, fallback, reasoning=""):
+    return TestResult(
+        message=_summary(text, fallback),
+        reasoning=(reasoning or "").strip()[:4000],
+    )

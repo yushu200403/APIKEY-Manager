@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parent
 ENTRYPOINT = ROOT / "run.py"
 ICON = ROOT / "favicon.ico"
 APP_DIR = ROOT / "app"
+ICON_FONT = APP_DIR / "static" / "fonts" / "fa-solid-900.woff2"
 DIST_DIR = ROOT / "dist"
 BUILD_DIR = ROOT / "build"
 SPEC_DIR = ROOT / "build-spec"
@@ -31,6 +32,8 @@ def build_command(args):
         raise FileNotFoundError(f"图标文件不存在：{ICON}")
     if not APP_DIR.exists():
         raise FileNotFoundError(f"应用目录不存在：{APP_DIR}")
+    if not ICON_FONT.exists():
+        raise FileNotFoundError(f"图标字体不存在：{ICON_FONT}")
 
     command = [
         sys.executable,

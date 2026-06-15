@@ -7,6 +7,8 @@ const state = {
   generic: [],
   selectedGenericCategory: null,
   testSettings: null,
+  testingProviderId: null,
+  refreshingModelsProviderId: null,
   backendOnline: true,
 };
 
@@ -14,6 +16,23 @@ const formatLabels = {
   openai_chat_completion: "OpenAI Chat Completions",
   openai_response: "OpenAI Response",
   anthropic_message: "Anthropic Messages",
+};
+
+const iconCodes = {
+  add: "\uf067",
+  copy: "\uf0c5",
+  database: "\uf1c0",
+  delete: "\uf1f8",
+  download: "\uf019",
+  edit: "\uf044",
+  export: "\uf56e",
+  import: "\uf56f",
+  info: "\uf05a",
+  lock: "\uf023",
+  open: "\uf35d",
+  refresh: "\uf2f1",
+  save: "\uf0c7",
+  sort: "\uf0dc",
 };
 
 const app = document.getElementById("app");
@@ -131,7 +150,7 @@ function render() {
         <h1>APIKEY管理器</h1>
         <div class="toolbar">
           ${renderConnectionStatus()}
-          <button type="button" onclick="lockApp()">锁定</button>
+          ${iconButton({ label: "锁定", iconName: "lock", onclick: "lockApp()", text: true })}
         </div>
       </header>
       <div class="main-layout">
@@ -152,6 +171,20 @@ function renderConnectionStatus() {
       <span class="connection-dot"></span>
       <span>${state.backendOnline ? "已连接" : "已断开"}</span>
     </div>
+  `;
+}
+
+function iconMarkup(iconName) {
+  return `<span class="app-icon" aria-hidden="true">${escapeHtml(iconCodes[iconName] || "")}</span>`;
+}
+
+function iconButton({ label, iconName, onclick, className = "", disabled = false, text = false }) {
+  const classes = ["icon-action", text ? "text-action" : "", className].filter(Boolean).join(" ");
+  const labelText = text ? `<span class="button-label">${escapeHtml(label)}</span>` : "";
+  return `
+    <button class="${escapeAttr(classes)}" type="button" title="${escapeAttr(label)}" aria-label="${escapeAttr(label)}" onclick="${onclick}" ${disabled ? "disabled" : ""}>
+      ${iconMarkup(iconName)}${labelText}
+    </button>
   `;
 }
 
@@ -205,8 +238,8 @@ function renderLlmView() {
         <div class="pane-head">
           <h2>供应商列表</h2>
           <div class="toolbar">
-            <button type="button" onclick="openOrderModal('providers')" ${state.providers.length > 1 ? "" : "disabled"}>调整顺序</button>
-            <button class="primary icon" type="button" title="添加供应商" onclick="openProviderModal()">＋</button>
+            ${iconButton({ label: "调整供应商顺序", iconName: "sort", onclick: "openOrderModal('providers')", disabled: state.providers.length <= 1 })}
+            ${iconButton({ label: "添加供应商", iconName: "add", onclick: "openProviderModal()", className: "primary" })}
           </div>
         </div>
         ${state.providers.length ? state.providers.map(renderProviderListItem).join("") : `<div class="empty">暂无供应商</div>`}
@@ -231,8 +264,8 @@ function renderProviderListItem(item, index) {
 
 function renderProviderDetail(provider) {
   const websiteActions = provider.website_url ? `
-    <a class="button-link" href="${escapeAttr(provider.website_url)}" target="_blank" rel="noopener noreferrer">打开官网</a>
-    <button type="button" onclick="copyText(${jsLiteral(provider.website_url)})">复制官网</button>
+    <a class="button-link icon-action text-action" href="${escapeAttr(provider.website_url)}" target="_blank" rel="noopener noreferrer" title="打开官网" aria-label="打开官网">${iconMarkup("open")}<span class="button-label">打开官网</span></a>
+    ${iconButton({ label: "复制官网", iconName: "copy", onclick: `copyText(${jsLiteral(provider.website_url)})`, text: true })}
   ` : "";
   return `
     <div class="pane-head">
@@ -242,9 +275,9 @@ function renderProviderDetail(provider) {
       </div>
       <div class="toolbar">
         ${websiteActions}
-        <button type="button" onclick="copyText(${jsLiteral(provider.base_url)})">复制端点</button>
-        <button type="button" onclick="openProviderModal(${provider.id})">编辑</button>
-        <button class="danger" type="button" onclick="deleteProvider(${provider.id})">删除</button>
+        ${iconButton({ label: "复制端点", iconName: "copy", onclick: `copyText(${jsLiteral(provider.base_url)})`, text: true })}
+        ${iconButton({ label: "编辑供应商", iconName: "edit", onclick: `openProviderModal(${provider.id})` })}
+        ${iconButton({ label: "删除供应商", iconName: "delete", onclick: `deleteProvider(${provider.id})`, className: "danger" })}
       </div>
     </div>
     <div class="detail-body">
@@ -257,27 +290,27 @@ function renderProviderDetail(provider) {
 
 function renderKeysSection(provider) {
   const rows = provider.keys || [];
+  const testing = state.testingProviderId === provider.id;
   return `
     <section class="section">
       <div class="section-head">
         <h2>API密钥</h2>
         <div class="toolbar">
-          <button type="button" onclick="testSelectedKey(${provider.id})" ${provider.test_key_id ? "" : "disabled"}>测试指定密钥</button>
-          <button type="button" onclick="openOrderModal('keys')" ${(provider.keys || []).length > 1 ? "" : "disabled"}>调整顺序</button>
-          <button class="primary" type="button" onclick="openKeyModal(${provider.id})">添加密钥</button>
+          <button type="button" onclick="testSelectedKey(${provider.id})" ${provider.test_key_id && !testing ? "" : "disabled"}>${testing ? "正在测试" : "测试指定密钥"}</button>
+          ${iconButton({ label: "调整密钥顺序", iconName: "sort", onclick: "openOrderModal('keys')", disabled: (provider.keys || []).length <= 1 })}
+          ${iconButton({ label: "添加密钥", iconName: "add", onclick: `openKeyModal(${provider.id})`, className: "primary", text: true })}
         </div>
       </div>
       <div class="hint">选择一条密钥作为测试密钥；模型列表获取和模型测试都会使用它。</div>
       ${rows.length ? `
         <div class="table-wrap">
-          <table>
+          <table class="keys-table">
             <thead>
               <tr>
                 <th>测试密钥</th>
                 <th>名称</th>
                 <th>密钥</th>
                 <th>测试状态</th>
-                <th>上次测试</th>
                 <th>操作</th>
               </tr>
             </thead>
@@ -291,24 +324,76 @@ function renderKeysSection(provider) {
 
 function renderKeyRow(key, provider, index, total) {
   const status = key.test_status || "untested";
-  const statusText = status === "success" ? "成功" : status === "failed" ? "失败" : "未测试";
+  const statusText = status === "success" ? "成功" : status === "failed" ? "失败" : status === "testing" ? "正在测试" : "未测试";
+  const hasTestDetail = Boolean(key.test_message || key.test_reasoning || key.last_tested);
   return `
     <tr>
       <td><input type="radio" name="test-key" ${provider.test_key_id === key.id ? "checked" : ""} onchange="setTestKey(${provider.id}, ${key.id})" /></td>
       <td>${escapeHtml(key.key_name)}</td>
       <td class="secret">${escapeHtml(key.masked_key)}</td>
-      <td><span class="status ${status}">${statusText}</span></td>
-      <td>${escapeHtml(formatUtc8Time(key.last_tested) || "-")}</td>
+      <td>
+        <div class="status-cell">
+          <span class="status ${status}">${statusText}</span>
+          ${hasTestDetail ? iconButton({ label: "查看测试详情", iconName: "info", onclick: `openTestDetailModal(${key.id})` }) : ""}
+        </div>
+      </td>
       <td>
         <div class="toolbar">
-          <button type="button" onclick="copyText(${jsLiteral(key.api_key)})">复制</button>
-          <button type="button" onclick="openKeyModal(${key.provider_id}, ${key.id})">编辑</button>
-          <button class="danger" type="button" onclick="deleteKey(${key.id})">删除</button>
+          ${iconButton({ label: "复制密钥", iconName: "copy", onclick: `copyText(${jsLiteral(key.api_key)})` })}
+          ${iconButton({ label: "编辑密钥", iconName: "edit", onclick: `openKeyModal(${key.provider_id}, ${key.id})` })}
+          ${iconButton({ label: "删除密钥", iconName: "delete", onclick: `deleteKey(${key.id})`, className: "danger" })}
         </div>
       </td>
     </tr>
-    ${key.test_message ? `<tr><td colspan="6" class="meta">${escapeHtml(key.test_message)}</td></tr>` : ""}
   `;
+}
+
+function openTestDetailModal(keyId) {
+  let key = null;
+  if (state.providerDetail && state.providerDetail.keys) {
+    key = state.providerDetail.keys.find((item) => item.id === keyId);
+  }
+  if (!key) return;
+  const testedAt = formatUtc8Time(key.last_tested);
+  openModal(`
+    <div class="modal">
+      <h2>测试详情</h2>
+      <div class="test-detail-list">
+        <div class="test-detail-item">
+          <strong>测试状态</strong>
+          <span class="status ${escapeAttr(key.test_status || "untested")}">${escapeHtml(testStatusText(key.test_status || "untested"))}</span>
+        </div>
+        ${testedAt ? `
+          <div class="test-detail-item">
+            <strong>测试时间</strong>
+            <div class="meta">${escapeHtml(testedAt)}</div>
+          </div>
+        ` : ""}
+        ${key.test_message ? `
+          <div class="test-detail-item">
+            <strong>测试输出</strong>
+            <pre class="test-detail-text">${escapeHtml(key.test_message)}</pre>
+          </div>
+        ` : ""}
+        ${key.test_reasoning ? `
+          <div class="test-detail-item">
+            <strong>模型推理内容</strong>
+            <pre class="test-detail-text">${escapeHtml(key.test_reasoning)}</pre>
+          </div>
+        ` : ""}
+      </div>
+      <div class="modal-actions">
+        <button type="button" onclick="closeModal()">关闭</button>
+      </div>
+    </div>
+  `);
+}
+
+function testStatusText(status) {
+  if (status === "success") return "成功";
+  if (status === "failed") return "失败";
+  if (status === "testing") return "正在测试";
+  return "未测试";
 }
 
 function renderProviderTestConfig(provider) {
@@ -318,7 +403,7 @@ function renderProviderTestConfig(provider) {
     <section class="section">
       <div class="section-head">
         <h2>测试模型</h2>
-        <button class="primary" type="button" onclick="saveProviderTestConfig(${provider.id})">保存模型</button>
+        ${iconButton({ label: "保存模型", iconName: "save", onclick: `saveProviderTestConfig(${provider.id})`, className: "primary", text: true })}
       </div>
       <div class="grid-2">
         <div class="field">
@@ -339,6 +424,7 @@ function renderProviderTestConfig(provider) {
 
 function renderModelsSection(provider) {
   const cache = provider.model_cache || { model_ids: [], last_fetched: null };
+  const refreshing = state.refreshingModelsProviderId === provider.id;
   return `
     <section class="section">
       <div class="section-head">
@@ -346,7 +432,7 @@ function renderModelsSection(provider) {
           <h2>模型列表</h2>
           <div class="meta">上次获取：${escapeHtml(formatUtc8Time(cache.last_fetched) || "尚未获取")}</div>
         </div>
-        <button class="primary" type="button" onclick="refreshModels(${provider.id})" ${provider.test_key_id ? "" : "disabled"}>刷新模型列表</button>
+        ${iconButton({ label: refreshing ? "正在刷新" : "刷新模型列表", iconName: "refresh", onclick: `refreshModels(${provider.id})`, className: "primary", text: true, disabled: !provider.test_key_id || refreshing })}
       </div>
       <div class="hint">刷新模型列表不依赖测试模型配置，只使用当前指定的测试密钥请求模型端点。</div>
       ${cache.model_ids.length ? `
@@ -357,7 +443,7 @@ function renderModelsSection(provider) {
           ${cache.model_ids.map((model) => `
             <div class="model-row">
               <span class="secret">${escapeHtml(model)}</span>
-              <button type="button" onclick="copyText(${jsLiteral(model)})">复制</button>
+              ${iconButton({ label: "复制模型 ID", iconName: "copy", onclick: `copyText(${jsLiteral(model)})` })}
             </div>
           `).join("")}
           <div class="model-empty filtered-out">没有匹配的模型</div>
@@ -374,8 +460,8 @@ function renderGenericView() {
         <div class="pane-head">
           <h2>类别列表</h2>
           <div class="toolbar">
-            <button type="button" onclick="openOrderModal('categories')" ${state.generic.length > 1 ? "" : "disabled"}>调整顺序</button>
-            <button class="primary icon" type="button" title="添加类别" onclick="openGenericCategoryModal()">＋</button>
+            ${iconButton({ label: "调整类别顺序", iconName: "sort", onclick: "openOrderModal('categories')", disabled: state.generic.length <= 1 })}
+            ${iconButton({ label: "添加类别", iconName: "add", onclick: "openGenericCategoryModal()", className: "primary" })}
           </div>
         </div>
         ${state.generic.length ? state.generic.map(renderGenericListItem).join("") : `<div class="empty">暂无类别</div>`}
@@ -415,10 +501,10 @@ function renderGenericGroup(group) {
           ${group.description ? `<div class="meta">${escapeHtml(group.description)}</div>` : ""}
         </div>
         <div class="toolbar">
-          <button type="button" onclick="openOrderModal('genericKeys', ${jsLiteral(group.category)})" ${group.items.length > 1 ? "" : "disabled"}>调整顺序</button>
-          <button type="button" onclick="openGenericCategoryModal(${jsLiteral(group.category)})">编辑类别</button>
-          <button class="primary" type="button" onclick="openGenericKeyModal(${jsLiteral(group.category)})">添加键值对</button>
-          <button class="danger" type="button" onclick="deleteGenericCategory(${jsLiteral(group.category)})">删除类别</button>
+          ${iconButton({ label: "调整键值顺序", iconName: "sort", onclick: `openOrderModal('genericKeys', ${jsLiteral(group.category)})`, disabled: group.items.length <= 1 })}
+          ${iconButton({ label: "编辑类别", iconName: "edit", onclick: `openGenericCategoryModal(${jsLiteral(group.category)})` })}
+          ${iconButton({ label: "添加键值对", iconName: "add", onclick: `openGenericKeyModal(${jsLiteral(group.category)})`, className: "primary", text: true })}
+          ${iconButton({ label: "删除类别", iconName: "delete", onclick: `deleteGenericCategory(${jsLiteral(group.category)})`, className: "danger" })}
         </div>
       </div>
       ${group.items.length ? `
@@ -440,9 +526,9 @@ function renderGenericGroup(group) {
                 <td>${escapeHtml(item.description || "-")}</td>
                 <td>
                   <div class="toolbar">
-                    <button type="button" onclick="copyText(${jsLiteral(item.key_value)})">复制</button>
-                    <button type="button" onclick="openGenericKeyModal(${jsLiteral(group.category)}, ${item.id})">编辑</button>
-                    <button class="danger" type="button" onclick="deleteGenericKey(${item.id})">删除</button>
+                    ${iconButton({ label: "复制键值", iconName: "copy", onclick: `copyText(${jsLiteral(item.key_value)})` })}
+                    ${iconButton({ label: "编辑键值对", iconName: "edit", onclick: `openGenericKeyModal(${jsLiteral(group.category)}, ${item.id})` })}
+                    ${iconButton({ label: "删除键值对", iconName: "delete", onclick: `deleteGenericKey(${item.id})`, className: "danger" })}
                   </div>
                 </td>
               </tr>
@@ -477,16 +563,16 @@ function renderSettingsView() {
         <strong>数据库文件位置</strong>
         <div class="toolbar">
           <span class="secret">${escapeHtml(state.status.database_path)}</span>
-          <button type="button" onclick="copyText(${jsLiteral(state.status.database_path)})">复制</button>
+          ${iconButton({ label: "复制数据库路径", iconName: "copy", onclick: `copyText(${jsLiteral(state.status.database_path)})` })}
         </div>
       </div>
       <div class="settings-item">
         <strong>数据导入导出</strong>
         <div class="meta">导出的 JSON、Markdown 和数据库文件都包含真实密钥值，请只保存到可信位置。导入仅支持本应用导出的 JSON，并会替换当前数据库内容。</div>
         <div class="toolbar settings-actions">
-          <button type="button" onclick="openExportModal()">导出数据</button>
-          <button type="button" onclick="downloadDatabase()">下载数据库</button>
-          <button class="primary" type="button" onclick="openImportModal()">导入 JSON</button>
+          ${iconButton({ label: "导出数据", iconName: "export", onclick: "openExportModal()", text: true })}
+          ${iconButton({ label: "下载数据库", iconName: "database", onclick: "downloadDatabase()", text: true })}
+          ${iconButton({ label: "导入 JSON", iconName: "import", onclick: "openImportModal()", className: "primary", text: true })}
         </div>
       </div>
       <div class="settings-item">
@@ -533,6 +619,8 @@ async function lockApp() {
     state.generic = [];
     state.selectedGenericCategory = null;
     state.testSettings = null;
+    state.testingProviderId = null;
+    state.refreshingModelsProviderId = null;
     render();
   });
 }
@@ -689,18 +777,42 @@ async function deleteKey(keyId) {
 async function testSelectedKey(providerId) {
   await run(async () => {
     showToast("正在测试指定密钥");
-    await api(`/api/providers/${providerId}/test-selected-key`, jsonOptions("POST"));
-    await loadProviderDetail(providerId);
+    state.testingProviderId = providerId;
+    markSelectedKeyTesting(providerId);
     render();
+    try {
+      await api(`/api/providers/${providerId}/test-selected-key`, jsonOptions("POST"));
+    } finally {
+      if (state.testingProviderId === providerId) state.testingProviderId = null;
+      await loadProviderDetail(providerId).catch(() => {});
+      render();
+    }
   });
+}
+
+function markSelectedKeyTesting(providerId) {
+  const provider = state.providerDetail;
+  if (!provider || provider.id !== providerId || !provider.test_key_id) return;
+  const key = (provider.keys || []).find((item) => item.id === provider.test_key_id);
+  if (!key) return;
+  key.test_status = "testing";
+  key.test_message = "";
+  key.test_reasoning = "";
+  key.last_tested = null;
 }
 
 async function refreshModels(providerId) {
   await run(async () => {
     showToast("正在刷新模型列表");
-    await api(`/api/providers/${providerId}/models/refresh`, jsonOptions("POST"));
-    await loadProviderDetail(providerId);
+    state.refreshingModelsProviderId = providerId;
     render();
+    try {
+      await api(`/api/providers/${providerId}/models/refresh`, jsonOptions("POST"));
+    } finally {
+      if (state.refreshingModelsProviderId === providerId) state.refreshingModelsProviderId = null;
+      await loadProviderDetail(providerId).catch(() => {});
+      render();
+    }
   });
 }
 

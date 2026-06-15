@@ -28,7 +28,9 @@ class ApiClientTests(unittest.TestCase):
         response = FakeResponse({"choices": [{"message": {"content": "ok"}}]})
 
         with patch("app.api_client.requests.request", return_value=response) as mocked:
-            self.assertEqual(test_chat_endpoint(provider, "test-key", config), "ok")
+            result = test_chat_endpoint(provider, "test-key", config)
+            self.assertEqual(result.message, "ok")
+            self.assertEqual(result.reasoning, "")
 
         method, url = mocked.call_args.args
         request_body = mocked.call_args.kwargs["json"]
@@ -38,6 +40,49 @@ class ApiClientTests(unittest.TestCase):
         self.assertEqual(request_body["messages"][0]["role"], "system")
         self.assertEqual(request_body["messages"][1]["content"], "你是什么模型？")
         self.assertNotIn("prompt", request_body)
+
+    def test_openai_chat_completion_extracts_reasoning_content(self):
+        provider = {
+            "base_url": "https://api.example.com/v1",
+            "api_format": "openai_chat_completion",
+        }
+        config = {
+            "test_model": "reasoning-model",
+            "system_prompt": "你是一个有帮助的助手。",
+            "user_prompt": "测试",
+        }
+        response = FakeResponse({
+            "choices": [
+                {
+                    "message": {
+                        "content": "最终回答",
+                        "reasoning_content": "推理过程",
+                    }
+                }
+            ]
+        })
+
+        with patch("app.api_client.requests.request", return_value=response):
+            result = test_chat_endpoint(provider, "test-key", config)
+
+        self.assertEqual(result.message, "最终回答")
+        self.assertEqual(result.reasoning, "推理过程")
+
+    def test_empty_response_text_is_failure(self):
+        provider = {
+            "base_url": "https://api.example.com/v1",
+            "api_format": "openai_chat_completion",
+        }
+        config = {
+            "test_model": "empty-model",
+            "system_prompt": "你是一个有帮助的助手。",
+            "user_prompt": "测试",
+        }
+        response = FakeResponse({"choices": [{"message": {"content": ""}}]})
+
+        with patch("app.api_client.requests.request", return_value=response):
+            with self.assertRaisesRegex(ValueError, "响应中没有文本内容"):
+                test_chat_endpoint(provider, "test-key", config)
 
 if __name__ == "__main__":
     unittest.main()

@@ -127,6 +127,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
     last_tested TIMESTAMP,
     test_status TEXT DEFAULT 'untested',
     test_message TEXT,
+    test_reasoning TEXT,
     sort_order INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (provider_id) REFERENCES llm_providers(id) ON DELETE CASCADE

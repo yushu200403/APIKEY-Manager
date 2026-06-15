@@ -249,21 +249,25 @@ class Store:
             "user_prompt": prompt_settings["user_prompt"],
         }
         try:
-            message = test_chat_endpoint(provider, key["api_key"], config)
+            test_result = test_chat_endpoint(provider, key["api_key"], config)
+            message = test_result.message if hasattr(test_result, "message") else str(test_result)
+            reasoning = test_result.reasoning if hasattr(test_result, "reasoning") else ""
             status = "success"
         except Exception as exc:
             message = str(exc)
+            reasoning = ""
             status = "failed"
         self.db().execute(
             """
             UPDATE api_keys
-            SET test_status = ?, test_message = ?, last_tested = CURRENT_TIMESTAMP
+            SET test_status = ?, test_message = ?, test_reasoning = ?, last_tested = CURRENT_TIMESTAMP
             WHERE id = ?
             """,
-            (status, message, key_id),
+            (status, message, reasoning, key_id),
         )
         result = self._key(key_id)
         result["test_message"] = message
+        result["test_reasoning"] = reasoning
         return result
 
     def refresh_models(self, provider_id):
@@ -327,6 +331,7 @@ class Store:
                 for key_data, key in zip(provider_data["keys"], key_rows):
                     key_data["test_status"] = key.get("test_status") or "untested"
                     key_data["test_message"] = key.get("test_message") or ""
+                    key_data["test_reasoning"] = key.get("test_reasoning") or ""
             providers.append(provider_data)
         data = {
             "schema": EXPORT_SCHEMA,
@@ -376,7 +381,7 @@ class Store:
                     ])
                 provider_lines.append("")
                 if include_tests:
-                    provider_lines.extend(["| 密钥别名 | API Key | 测试状态 | 测试消息 |", "| --- | --- | --- | --- |"])
+                    provider_lines.extend(["| 密钥别名 | API Key | 测试状态 | 测试消息 | 推理内容 |", "| --- | --- | --- | --- | --- |"])
                 else:
                     provider_lines.extend(["| 密钥别名 | API Key |", "| --- | --- |"])
                 lines.extend(provider_lines)
@@ -385,12 +390,13 @@ class Store:
                         if include_tests:
                             lines.append(
                                 f"| {self._markdown_cell(key['key_name'])} | `{self._markdown_cell(key['api_key'])}` | "
-                                f"{self._markdown_cell(key['test_status'])} | {self._markdown_cell(key['test_message'] or '-')} |"
+                                f"{self._markdown_cell(key['test_status'])} | {self._markdown_cell(key['test_message'] or '-')} | "
+                                f"{self._markdown_cell(key['test_reasoning'] or '-')} |"
                             )
                         else:
                             lines.append(f"| {self._markdown_cell(key['key_name'])} | `{self._markdown_cell(key['api_key'])}` |")
                 else:
-                    lines.append("| - | - | - | - |" if include_tests else "| - | - |")
+                    lines.append("| - | - | - | - | - |" if include_tests else "| - | - |")
                 lines.append("")
         else:
             lines.extend(["暂无大模型供应商。", ""])
@@ -738,6 +744,7 @@ class Store:
                 "api_key": require_text(key.get("api_key"), "API密钥"),
                 "test_status": str(key.get("test_status") or "untested").strip() or "untested",
                 "test_message": str(key.get("test_message") or "").strip(),
+                "test_reasoning": str(key.get("test_reasoning") or "").strip(),
             })
         return normalized
 
@@ -791,10 +798,10 @@ class Store:
             for key_index, key in enumerate(provider["keys"], start=1):
                 key_cur = conn.execute(
                     """
-                    INSERT INTO api_keys (provider_id, key_name, api_key, test_status, test_message, sort_order)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO api_keys (provider_id, key_name, api_key, test_status, test_message, test_reasoning, sort_order)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (provider_id, key["key_name"], key["api_key"], key["test_status"], key["test_message"], key_index),
+                    (provider_id, key["key_name"], key["api_key"], key["test_status"], key["test_message"], key["test_reasoning"], key_index),
                 )
                 if provider["test_key_name"] and key["key_name"] == provider["test_key_name"]:
                     test_key_id = key_cur.lastrowid
