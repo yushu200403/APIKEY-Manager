@@ -148,17 +148,17 @@ function render() {
     <div class="app-shell">
       <header class="titlebar">
         <h1>APIKEY管理器</h1>
+        <nav class="nav">
+          <button class="${state.view === "llm" ? "active" : ""}" onclick="switchView('llm')">大模型</button>
+          <button class="${state.view === "generic" ? "active" : ""}" onclick="switchView('generic')">通用密钥</button>
+          <button class="${state.view === "settings" ? "active" : ""}" onclick="switchView('settings')">设置</button>
+        </nav>
         <div class="toolbar">
           ${renderConnectionStatus()}
           ${iconButton({ label: "锁定", iconName: "lock", onclick: "lockApp()", text: true })}
         </div>
       </header>
       <div class="main-layout">
-        <nav class="nav">
-          <button class="${state.view === "llm" ? "active" : ""}" onclick="switchView('llm')">大模型</button>
-          <button class="${state.view === "generic" ? "active" : ""}" onclick="switchView('generic')">通用密钥</button>
-          <button class="${state.view === "settings" ? "active" : ""}" onclick="switchView('settings')">设置</button>
-        </nav>
         <main class="content">${renderCurrentView()}</main>
       </div>
     </div>
@@ -186,6 +186,21 @@ function iconButton({ label, iconName, onclick, className = "", disabled = false
       ${iconMarkup(iconName)}${labelText}
     </button>
   `;
+}
+
+function sideListScrollTop() {
+  const list = document.querySelector(".side-list");
+  return list ? list.scrollTop : 0;
+}
+
+function restoreSideListScroll(scrollTop) {
+  const list = document.querySelector(".side-list");
+  if (list) list.scrollTop = scrollTop;
+}
+
+function renderWithSideListScroll(scrollTop) {
+  render();
+  restoreSideListScroll(scrollTop);
 }
 
 function renderOffline() {
@@ -635,8 +650,9 @@ async function switchView(view) {
 
 async function selectProvider(providerId) {
   await run(async () => {
+    const scrollTop = sideListScrollTop();
     await loadProviderDetail(providerId);
-    render();
+    renderWithSideListScroll(scrollTop);
   });
 }
 
@@ -985,8 +1001,9 @@ async function submitImportJson(event) {
 }
 
 function selectGenericCategory(category) {
+  const scrollTop = sideListScrollTop();
   state.selectedGenericCategory = category;
-  render();
+  renderWithSideListScroll(scrollTop);
 }
 
 function openGenericCategoryModal(category) {
